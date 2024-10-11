@@ -38,7 +38,7 @@ class PDJAX():
                  number_of_elements:int=20,
                  bulk_modulus:float=100,
                  density:float=1.0,
-                 thickness:float=1.0,
+                 thickness:Union[float, np.ndarray]=1.0,
                  horizon:Union[float, None]=None,
                  critical_stretch:Union[float, None] = None
                  ) -> None:
@@ -66,6 +66,12 @@ class PDJAX():
         else:
             self.horizon = delta_x * 3.015
 
+        if isinstance(thickness, float):
+            thickness = jnp.ones(number_of_elements) * thickness
+        elif isinstance(thickness, np.ndarray):
+            thickness = jnp.asarray(thickness)
+            assert thickness.shape[0] == number_of_elements, ValueError("Thickness array length must match number of elements")
+
         # Compute the pd_node locations, kdtree, nns, reference_position_state, etc.
         self.setup_discretization(thickness)
 
@@ -81,16 +87,13 @@ class PDJAX():
 
         return
 
-    def setup_plot(self):
-        _, self.ax = plt.subplots()
-        self.line, = self.ax.plot(self.pd_nodes, self.displacement)
 
     def allow_damage(self):
         self._allow_damage = True
         return
 
 
-    def setup_discretization(self, thickness:float):
+    def setup_discretization(self, thickness:np.ndarray):
         
         nodes = self.nodes
 
@@ -108,9 +111,10 @@ class PDJAX():
         # search turn out to be the reference_magnitude_state, so we'll store them now
         # to avoid needed to calculate later.
         reference_magnitude_state, neighborhood = self.tree.query(self.pd_nodes[:,None], 
-                k=100, p=2, eps=0.0, distance_upper_bound=(self.horizon + np.max(self.lengths)/2))
+                k=100, p=2, eps=0.0, distance_upper_bound=(self.horizon + np.max(self.lengths) / 2.0))
 
 
+        self.num_neighbors = jnp.asarray((neighborhood != self.tree.n).sum(axis=1)) - 1
         self.max_neighbors = np.max((neighborhood != self.tree.n).sum(axis=1))
 
         # Convert to JAX arrays and trim down excess neighbors
@@ -135,7 +139,7 @@ class PDJAX():
         # A Numpy masked array containing the *influence vector-state* as defined in Silling et al. 2007
         # ratio = self.reference_magnitude_state / self.horizon
         # self.influence_state = jnp.ones_like(self.volume_state) - 35.0 * ratio ** 4.0 + 84.0 * ratio ** 5.0 - 70 * ratio ** 6.0 + 20 * ratio ** 7.0
-        self.influence_state = jnp.where(self.volume_state > 1.0e-12, 1.0, 0.0)
+        self.influence_state = jnp.where(self.volume_state > 1.0e-16, 1.0, 0.0)
         #
         # The fields
         self.displacement = jnp.zeros_like(self.pd_nodes)
@@ -146,7 +150,7 @@ class PDJAX():
         return
 
 
-    def compute_partial_volumes(self, thickness:float):
+    def compute_partial_volumes(self, thickness:np.ndarray):
 
         # Setup some local (to function) convenience variables
         neigh = self.neighborhood
@@ -160,7 +164,7 @@ class PDJAX():
 
         # Initialize the volume_state to the lengths * width * thickness
         width = 1.0
-        vol_state_uncorrected = lens[neigh] * width * thickness
+        vol_state_uncorrected = lens[neigh] * thickness[:, None] * width 
 
         # Place zeros in node locations that are not fully inside the support neighborhood nor have a partial volume
         vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
@@ -173,8 +177,8 @@ class PDJAX():
         is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
 
         # Compute the partial volumes conditionally
-        vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness, vol_state)
-        vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness, vol_state)
+        vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[:, None], vol_state)
+        vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness[:, None], vol_state)
 
         # If the partial volume is predicted to be larger than the unocrrected volume, set it back
         # vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
@@ -183,10 +187,10 @@ class PDJAX():
         # Now compute the "reverse volume state", this is the partial volume of the "source" node, i.e. node i,
         # as seen from node j.  This doesn't show up anywhere in any papers, it's just used here for computational
         # convenience
-        vol_array = lens[:,None] * width * thickness
+        vol_array = lens[:,None] * width * thickness[:, None]
         rev_vol_state = jnp.ones_like(vol_state) * vol_array
-        rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * width * thickness, rev_vol_state)
-        rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * width * thickness, rev_vol_state)
+        rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * width * thickness[:, None], rev_vol_state)
+        rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * width * thickness[:, None], rev_vol_state)
         #If the partial volume is predicted to be larger than the uncorrected volume, set it back
         rev_vol_state = np.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
 
@@ -223,7 +227,7 @@ class PDJAX():
                 min_node, max_node = np.sort([self.pd_nodes[idx], self.pd_nodes[end_point_idx]])
 
                 if min_node < location and location < max_node:
-                    self.influence_state = self.influence_state.at[idx, bond_idx].set(0.1)
+                    self.influence_state = self.influence_state.at[idx, bond_idx].set(0.9)
 
         return
 
@@ -279,6 +283,9 @@ class PDJAX():
         force_state = inf_state * scalar_force_state * def_unit_state
 
         return force_state, inf_state
+
+    def compute_damage(self):
+        return 1 - self.influence_state.sum(axis=1) / self.num_neighbors
 
    
     # Internal force calculation
@@ -338,9 +345,9 @@ class PDJAX():
         #:The node indices of the boundary region at the right end of the bar
         self.right_boundary_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=self.horizon, p=2, eps=0.0)).sort()
 
-        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=4.0*self.horizon, p=2, eps=0.0)).sort()
+        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=2.0*self.horizon, p=2, eps=0.0)).sort()
         #:The node indices of the boundary region at the right end of the bar
-        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=4.0*self.horizon, p=2, eps=0.0)).sort()
+        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=2.0*self.horizon, p=2, eps=0.0)).sort()
         #Solve
         disp = self.displacement
         vel = self.velocity
@@ -374,9 +381,9 @@ if __name__ == "__main__":
     plt.ion()
 
     #Define problem size
-    fixed_length = 1.0 
-    delta_x = 0.02
-    fixed_horizon = 3.5 * delta_x
+    fixed_length = 10.0 
+    delta_x = 0.25
+    fixed_horizon = 2.6 * delta_x
 
     #Instantiate a 1d peridynamic problem with equally spaced nodes
     problem1 = PDJAX(bar_length=fixed_length,
@@ -384,9 +391,10 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     critical_stretch=None)
+                     thickness=100.0,
+                     critical_stretch=1.0e-4)
                      #critical_stretch=0.0001)
-    problem1.introduce_flaw(0.0)
+    #problem1.introduce_flaw(-2.0)
     # print("Before solve")
     # print(problem1.influence_state.at[:].get())
     problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
@@ -395,7 +403,7 @@ if __name__ == "__main__":
     # print(problem1.influence_state.at[:].get())
 
     fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k.')
+    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k-')
     plt.show()
 
     plt.ioff()
