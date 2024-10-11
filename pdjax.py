@@ -102,6 +102,7 @@ class PDJAX():
 
         # The PD nodes are the centroids of the elements
         self.pd_nodes = jnp.array(nodes[0:-1] + self.lengths / 2.0)
+        self.num_nodes = self.pd_nodes.shape[0]
 
         # Create's a kdtree to do nearest neighbor search
         self.tree = scipy.spatial.cKDTree(self.pd_nodes[:,None])
@@ -227,7 +228,7 @@ class PDJAX():
                 min_node, max_node = np.sort([self.pd_nodes[idx], self.pd_nodes[end_point_idx]])
 
                 if min_node < location and location < max_node:
-                    self.influence_state = self.influence_state.at[idx, bond_idx].set(0.9)
+                    self.influence_state = self.influence_state.at[idx, bond_idx].set(0.2)
 
         return
 
@@ -287,10 +288,35 @@ class PDJAX():
     def compute_damage(self):
         return 1 - self.influence_state.sum(axis=1) / self.num_neighbors
 
+
+    def smooth_ramp(self, t, t0, c=1.0, beta=5.0):
+        """
+        Function that linearly ramps up to c at t0, then smoothly transitions to c.
+
+        Parameters:
+        - t: Time variable (scalar or numpy array).
+        - t0: Time at which the transition occurs.
+        - c: Final constant value after transition.
+        - beta: Smoothness parameter (higher values = sharper transition).
+
+        Returns:
+        - f: Value of the function at time t.
+        """
+        # Linear ramp before t0 (with slope c/t0)
+        linear_ramp = (c / t0) * t
+
+        # Smooth transition using an exponential decay term
+        smooth_transition = c * (1 - jnp.exp(-beta * (t - t0))) + (c / t0) * t0
+
+        # Use `np.where` to define the piecewise function
+        f = jnp.where(t < t0, linear_ramp, smooth_transition)
+        
+        return f
+
    
     # Internal force calculation
     @partial(jit, static_argnums=(0,))
-    def compute_internal_force(self, disp, inf_state):
+    def compute_internal_force(self, disp, inf_state, time):
             
         # Define some local convenience variables     
         vol_state = self.volume_state
@@ -305,6 +331,21 @@ class PDJAX():
         force = (force_state * vol_state).sum(axis=1)
         force = force.at[neigh].add(-force_state * rev_vol_state)
 
+        if self.prescribed_force is not None:
+            li = 0
+            ramp_force = self.smooth_ramp(time, t0=1.e-5, c=self.prescribed_force)
+            left_bc_force_density = ramp_force / (vol_state[li].sum() + self.reverse_volume_state[li][0])
+            left_bc_nodal_forces = left_bc_force_density * vol_state[li][self.left_bc_mask]
+            force = force.at[self.left_bc_region].set(-left_bc_nodal_forces)
+            force = force.at[li].set(-left_bc_force_density * self.reverse_volume_state[li][li])
+            #
+            ri = self.num_nodes - 1
+            right_bc_force_density = ramp_force / (vol_state[ri].sum() + self.reverse_volume_state[ri][0])
+            right_bc_nodal_forces = right_bc_force_density * vol_state[ri][self.right_bc_mask]
+            force = force.at[self.right_bc_region].set(right_bc_nodal_forces)
+            force = force.at[ri].set(right_bc_force_density * self.reverse_volume_state[ri][0])
+
+
         return force, inf_state
 
 
@@ -315,13 +356,14 @@ class PDJAX():
         # TODO: Solve for stable time step
         time_step = 1.0e-9
 
-        bc_value = self.prescribed_velocity * time
-        # # Apply displacements
-        f = lambda x: 2.0 * bc_value / self.bar_length * x
-        disp = disp.at[self.left_boundary_region].set(f(self.pd_nodes[self.left_boundary_region]))
-        disp = disp.at[self.right_boundary_region].set(f(self.pd_nodes[self.right_boundary_region]))
+        if self.prescribed_velocity is not None:
+            bc_value = self.prescribed_velocity * time
+            # Apply displacements bcs
+            f = lambda x: 2.0 * bc_value / self.bar_length * x
+            disp = disp.at[self.left_bc_region].set(f(self.pd_nodes[self.left_bc_region]))
+            disp = disp.at[self.right_bc_region].set(f(self.pd_nodes[self.right_bc_region]))
 
-        force, inf_state = self.compute_internal_force(disp, inf_state)
+        force, inf_state = self.compute_internal_force(disp, inf_state, time)
 
         acc_new = force / self.rho
         vel = vel.at[:].add(0.5 * (acc + acc_new) * time_step)
@@ -331,23 +373,40 @@ class PDJAX():
         return (disp, vel, acc, inf_state, time + time_step)
 
 
-    def solve(self, prescribed_velocity=1.0, max_time:float=1.0):
+    def solve(self, 
+              prescribed_velocity:Union[float, None]=None, 
+              prescribed_force:Union[float, None]=None, 
+              max_time:float=1.0):
         '''
             Solves in time using Verlet-Velocity
         '''
 
-    
+        if prescribed_velocity is not None and prescribed_force is not None:
+            raise ValueError("Only one of prescribed_velocity or prescribed_force should be set, not both.")
+        
+        if prescribed_velocity is None and prescribed_force is None:
+            raise ValueError("Either prescribed_velocity or prescribed_force must be set.")
+
         self.prescribed_velocity = prescribed_velocity
+        self.prescribed_force = prescribed_force
 
-        #Find the nodes within 1 horizon of each end to apply the boundary conditions on.
         #:The node indices of the boundary region at the left end of the bar
-        self.left_boundary_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=self.horizon, p=2, eps=0.0)).sort()
-        #:The node indices of the boundary region at the right end of the bar
-        self.right_boundary_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=self.horizon, p=2, eps=0.0)).sort()
+        li = 0
+        self.left_bc_mask = self.neighborhood[li] != li
+        self.left_bc_region = self.neighborhood[li][self.left_bc_mask]
 
-        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=2.0*self.horizon, p=2, eps=0.0)).sort()
         #:The node indices of the boundary region at the right end of the bar
-        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=2.0*self.horizon, p=2, eps=0.0)).sort()
+        ri = self.num_nodes - 1
+        self.right_bc_mask = self.neighborhood[ri] != ri
+        self.right_bc_region = self.neighborhood[ri][self.right_bc_mask]
+
+        if prescribed_velocity is not None:
+            self.left_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+            self.right_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+
+        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+        #:The node indices of the boundary region at the right end of the bar
+        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
         #Solve
         disp = self.displacement
         vel = self.velocity
@@ -374,11 +433,34 @@ class PDJAX():
         ''' Convenience function for retrieving peridynamic node locations'''
         return self.pd_nodes
 
+def loss(thickness:jax.Array):
+
+    fixed_length = 10.0 
+    delta_x = 0.25
+    fixed_horizon = 2.6 * delta_x
+    num_elems = int(fixed_length/delta_x)
+
+    problem1 = PDJAX(bar_length=fixed_length,
+                     density=7850.0,
+                     bulk_modulus=200e9,
+                     number_of_elements=num_elems, 
+                     horizon=fixed_horizon,
+                     thickness=thickness)
+                     #critical_stretch=1.0e-4)
+    #problem1.introduce_flaw(0.0)
+    #problem1.solve(max_time=1.0e-3, prescribed_force=1.0e8)
+    problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
+    damage = problem1.compute_damage()
+
+    mean_damage = damage.sum() / problem1.num_nodes
+    mean_thickness = thickness.sum() / problem1.num_nodes
+    max_thickness = thickness.max()
+
+    return 0.5 * mean_damage + 0.5 * mean_thickness / max_thickness
+
 
 ### Main Program ####
 if __name__ == "__main__":
-
-    plt.ion()
 
     #Define problem size
     fixed_length = 10.0 
@@ -391,20 +473,13 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=100.0,
-                     critical_stretch=1.0e-4)
-                     #critical_stretch=0.0001)
-    #problem1.introduce_flaw(-2.0)
-    # print("Before solve")
-    # print(problem1.influence_state.at[:].get())
+                     thickness=0.25)
+                     #critical_stretch=1.0e-4)
+    #problem1.introduce_flaw(0.0)
+    #problem1.solve(max_time=1.0e-3, prescribed_force=1.0e8)
     problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
-    #problem1.solve(max_time=2.0e-9, prescribed_velocity=10.0)
-    # print("After solve")
-    # print(problem1.influence_state.at[:].get())
 
     fig, ax = plt.subplots()
     ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k-')
     plt.show()
 
-    plt.ioff()
-    # plt.show()
