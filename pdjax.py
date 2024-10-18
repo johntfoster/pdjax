@@ -336,14 +336,14 @@ class PDJAX():
             ramp_force = self.smooth_ramp(time, t0=1.e-5, c=self.prescribed_force)
             left_bc_force_density = ramp_force / (vol_state[li].sum() + self.reverse_volume_state[li][0])
             left_bc_nodal_forces = left_bc_force_density * vol_state[li][self.left_bc_mask]
-            force = force.at[self.left_bc_region].set(-left_bc_nodal_forces)
-            force = force.at[li].set(-left_bc_force_density * self.reverse_volume_state[li][li])
+            force = force.at[self.left_bc_region].add(-left_bc_nodal_forces)
+            force = force.at[li].add(-left_bc_force_density * self.reverse_volume_state[li][li])
             #
             ri = self.num_nodes - 1
             right_bc_force_density = ramp_force / (vol_state[ri].sum() + self.reverse_volume_state[ri][0])
             right_bc_nodal_forces = right_bc_force_density * vol_state[ri][self.right_bc_mask]
-            force = force.at[self.right_bc_region].set(right_bc_nodal_forces)
-            force = force.at[ri].set(right_bc_force_density * self.reverse_volume_state[ri][0])
+            force = force.at[self.right_bc_region].add(right_bc_nodal_forces)
+            force = force.at[ri].add(right_bc_force_density * self.reverse_volume_state[ri][0])
 
 
         return force, inf_state
@@ -433,6 +433,7 @@ class PDJAX():
         ''' Convenience function for retrieving peridynamic node locations'''
         return self.pd_nodes
 
+
 def loss(thickness:jax.Array):
 
     fixed_length = 10.0 
@@ -473,13 +474,13 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=0.25)
+                     thickness=1.0)
                      #critical_stretch=1.0e-4)
     #problem1.introduce_flaw(0.0)
-    #problem1.solve(max_time=1.0e-3, prescribed_force=1.0e8)
-    problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
+    problem1.solve(max_time=1.0e-3, prescribed_force=1.0e8)
+    #problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
 
     fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k-')
+    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k.')
     plt.show()
 
