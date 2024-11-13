@@ -165,7 +165,9 @@ class PDJAX():
 
         # Initialize the volume_state to the lengths * width * thickness
         width = 1.0
-        vol_state_uncorrected = lens[neigh] * thickness[:, None] * width 
+        self.width = width
+        self.thickness = thickness
+        vol_state_uncorrected = lens[neigh] * thickness[neigh] * width 
 
         # Place zeros in node locations that are not fully inside the support neighborhood nor have a partial volume
         vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
@@ -178,8 +180,8 @@ class PDJAX():
         is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
 
         # Compute the partial volumes conditionally
-        vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[:, None], vol_state)
-        vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness[:, None], vol_state)
+        vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[neigh], vol_state)
+        vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness[neigh], vol_state)
 
         # If the partial volume is predicted to be larger than the unocrrected volume, set it back
         # vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
@@ -331,16 +333,16 @@ class PDJAX():
         force = (force_state * vol_state).sum(axis=1)
         force = force.at[neigh].add(-force_state * rev_vol_state)
 
-        if self.prescribed_force is not None:
+        if self.prescribed_traction is not None:
             li = 0
-            ramp_force = self.smooth_ramp(time, t0=1.e-5, c=self.prescribed_force)
-            left_bc_force_density = ramp_force / (vol_state[li].sum() + self.reverse_volume_state[li][0])
+            ramp_traction = self.smooth_ramp(time, t0=1.e-5, c=self.prescribed_traction)  
+            left_bc_force_density = ramp_traction * (self.width * self.thickness[li]) / (vol_state[li].sum() + self.reverse_volume_state[li][0])
             left_bc_nodal_forces = left_bc_force_density * vol_state[li][self.left_bc_mask]
             force = force.at[self.left_bc_region].add(-left_bc_nodal_forces)
             force = force.at[li].add(-left_bc_force_density * self.reverse_volume_state[li][li])
             #
             ri = self.num_nodes - 1
-            right_bc_force_density = ramp_force / (vol_state[ri].sum() + self.reverse_volume_state[ri][0])
+            right_bc_force_density = ramp_traction * (self.width * self.thickness[ri]) / (vol_state[ri].sum() + self.reverse_volume_state[ri][0])
             right_bc_nodal_forces = right_bc_force_density * vol_state[ri][self.right_bc_mask]
             force = force.at[self.right_bc_region].add(right_bc_nodal_forces)
             force = force.at[ri].add(right_bc_force_density * self.reverse_volume_state[ri][0])
@@ -375,20 +377,20 @@ class PDJAX():
 
     def solve(self, 
               prescribed_velocity:Union[float, None]=None, 
-              prescribed_force:Union[float, None]=None, 
+              prescribed_traction:Union[float, None]=None, 
               max_time:float=1.0):
         '''
             Solves in time using Verlet-Velocity
         '''
 
-        if prescribed_velocity is not None and prescribed_force is not None:
-            raise ValueError("Only one of prescribed_velocity or prescribed_force should be set, not both.")
+        if prescribed_velocity is not None and prescribed_traction is not None:
+            raise ValueError("Only one of prescribed_velocity or prescribed_traction should be set, not both.")
         
-        if prescribed_velocity is None and prescribed_force is None:
-            raise ValueError("Either prescribed_velocity or prescribed_force must be set.")
+        if prescribed_velocity is None and prescribed_traction is None:
+            raise ValueError("Either prescribed_velocity or prescribed_traction must be set.")
 
         self.prescribed_velocity = prescribed_velocity
-        self.prescribed_force = prescribed_force
+        self.prescribed_traction = prescribed_traction
 
         #:The node indices of the boundary region at the left end of the bar
         li = 0
@@ -449,8 +451,8 @@ def loss(thickness:jax.Array):
                      thickness=thickness)
                      #critical_stretch=1.0e-4)
     #problem1.introduce_flaw(0.0)
-    #problem1.solve(max_time=1.0e-3, prescribed_force=1.0e8)
-    problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
+    problem1.solve(max_time=1.0e-3, prescribed_traction=1.0e8)
+    #problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
     damage = problem1.compute_damage()
 
     mean_damage = damage.sum() / problem1.num_nodes
@@ -474,10 +476,10 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=1.0)
+                     thickness=10.0)
                      #critical_stretch=1.0e-4)
     #problem1.introduce_flaw(0.0)
-    problem1.solve(max_time=1.0e-3, prescribed_force=1.0e8)
+    problem1.solve(max_time=1.0e-3, prescribed_traction=1.0e6)
     #problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
 
     fig, ax = plt.subplots()
