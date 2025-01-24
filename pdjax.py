@@ -99,6 +99,15 @@ class PDJAX():
 
         return
 
+    def reset(self, thickness):
+        self.displacement = self.displacement.at[:].set(0.0)
+        self.velocity = self.velocity.at[:].set(0.0)
+        self.acceleration = self.acceleration.at[:].set(0.0)
+        self.influence_state = self.acceleration.at[:].set(0.0)
+
+        self.compute_partial_volumes(thickness)
+        return
+
 
     def allow_damage(self):
         self._allow_damage = True
@@ -207,7 +216,7 @@ class PDJAX():
         rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * width * thickness[:, None], rev_vol_state)
         rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * width * thickness[:, None], rev_vol_state)
         #If the partial volume is predicted to be larger than the uncorrected volume, set it back
-        rev_vol_state = np.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
+        rev_vol_state = jnp.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
 
         # Set attributes
         self.volume_state = vol_state
@@ -448,27 +457,15 @@ class PDJAX():
         return self.pd_nodes
 
 
-def loss(thickness:jax.Array):
+def loss(thickness:jax.Array, problem:PDJAX):
 
-    fixed_length = 10.0 
-    delta_x = 0.25
-    fixed_horizon = 2.6 * delta_x
-    num_elems = int(fixed_length/delta_x)
+    problem.reset(thickness)
+    problem.solve(max_time=1.0e-3, prescribed_traction=1.0e8)
+    #problem.solve(max_time=1.0e-3, prescribed_velocity=1.0)
+    damage = problem.compute_damage()
 
-    problem1 = PDJAX(bar_length=fixed_length,
-                     density=7850.0,
-                     bulk_modulus=200e9,
-                     number_of_elements=num_elems, 
-                     horizon=fixed_horizon,
-                     thickness=thickness)
-                     #critical_stretch=1.0e-4)
-    problem1.introduce_flaw(0.0)
-    problem1.solve(max_time=1.0e-3, prescribed_traction=1.0e8)
-    #problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
-    damage = problem1.compute_damage()
-
-    mean_damage = damage.sum() / problem1.num_nodes
-    mean_thickness = thickness.sum() / problem1.num_nodes
+    mean_damage = damage.sum() / problem.num_nodes
+    mean_thickness = thickness.sum() / problem.num_nodes
     max_thickness = thickness.max()
 
     return 0.5 * mean_damage + 0.5 * mean_thickness / max_thickness
@@ -490,13 +487,14 @@ if __name__ == "__main__":
                      horizon=fixed_horizon,
                      thickness=0.5,
                      critical_stretch=1.0e-4)
-    problem1.introduce_flaw(1.0)
-    #problem1.solve(max_time=1.0e-3, prescribed_traction=1E7)
-    problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
 
-    fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k.')
-    plt.show()
+    problem1.introduce_flaw(0.0)
+    #problem1.solve(max_time=1.0e-3, prescribed_traction=1E7)
+    # problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
+    #
+    # fig, ax = plt.subplots()
+    # ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k.')
+    # plt.show()
     
     
     #hicknessInit=np.array([])
@@ -506,8 +504,8 @@ if __name__ == "__main__":
     
     #thicknessInit_jax=jnp.array(thicknessInit)
     #thicknessInit= jnp.ones(problem1.number_of_elements)
-    thicknessAr = jnp.ones(problem1.number_of_elements)
+    guess = jnp.ones(problem1.number_of_elements)
     #thickness = 1
-    result = jax.scipy.optimize.minimize(loss(thicknessAr), thicknessAr, method='BFGS')
+    result = jax.scipy.optimize.minimize(loss, guess, args=(problem1,), method='BFGS')
     #print(result)
 
