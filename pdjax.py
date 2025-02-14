@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 from functools import partial
 
+import jax
+import jax.numpy as jnp
+
 import numpy as np
 import scipy.spatial
 import scipy.optimize
 import matplotlib.pyplot as plt
 
-import jax
-import jax.numpy as jnp
 
 import jax.scipy
 import jax.scipy.optimize
@@ -114,6 +115,7 @@ class PDJAX():
         return
 
 
+    
     def setup_discretization(self, thickness:np.ndarray):
         
         nodes = self.nodes
@@ -128,32 +130,51 @@ class PDJAX():
         # Create's a kdtree to do nearest neighbor search
         self.tree = scipy.spatial.cKDTree(self.pd_nodes[:,None])
 
+
         # Get PD nodes in the neighborhood of support + largest node spacing, this will
         # find all potential partial volume nodes as well. The distances returned from the
         # search turn out to be the reference_magnitude_state, so we'll store them now
         # to avoid needed to calculate later.
         reference_magnitude_state, neighborhood = self.tree.query(self.pd_nodes[:,None], 
-                k=100, p=2, eps=0.0, distance_upper_bound=(self.horizon + np.max(self.lengths) / 2.0))
+                k=6, p=2, eps=0.0, distance_upper_bound=(self.horizon + np.max(self.lengths) / 2.0))
 
+        #trying to delete first column of ref_mag_state for broadcasting issue
+        reference_magnitude_state = jnp.delete(reference_magnitude_state, 0, 1)  
 
         self.num_neighbors = jnp.asarray((neighborhood != self.tree.n).sum(axis=1)) - 1
         self.max_neighbors = np.max((neighborhood != self.tree.n).sum(axis=1))
 
         # Convert to JAX arrays and trim down excess neighbors
         neighborhood = jnp.asarray(neighborhood[:, :self.max_neighbors])
-        self.reference_magnitude_state = jnp.delete(reference_magnitude_state[:, :self.max_neighbors], 0,1)
+        #self.reference_magnitude_state = jnp.delete(reference_magnitude_state[:, :self.max_neighbors], 0,0)
+
+        #changed to select just the first row and alleviate the broadcasting error
+        #self.reference_magnitude_state = jnp.delete(reference_magnitude_state[1, :self.max_neighbors], 0,0)
+        #gave [39,7] so feel like this is close
+        #self.reference_magnitude_state = jnp.delete(reference_magnitude_state[:, :self.max_neighbors], 0,0)
+        #switching to slicing instead of jnp.delete
+        self.reference_magnitude_state = reference_magnitude_state[0:, :self.max_neighbors]
+
+        #printing to look into the shape of all the things 
+        #print("self.max_neighbors = ",self.max_neighbors)
+
+        #print(len(reference_magnitude_state))
+        #print(reference_magnitude_state)
 
         # Cleanup neighborhood
         row_indices = jnp.arange(neighborhood.shape[0]).reshape(-1, 1)
         neighborhood = jnp.where(neighborhood == self.tree.n, row_indices, neighborhood)
         self.neighborhood = jnp.delete(neighborhood,0,1)
 
-
         # Compute the reference_position_state.  Using the terminology of Silling et al. 2007
         self.reference_position_state = self.pd_nodes[self.neighborhood] - self.pd_nodes[:,None]
 
         # Compute the partial volumes
         self.compute_partial_volumes(thickness)
+
+
+        #line to try to fix broadcasting error
+        #reference_magnitude_state = jnp.array(reference_magnitude_state[:, :6])
 
         # Cleanup reference_magnitude_state
         self.reference_magnitude_state = jnp.where(self.reference_magnitude_state == np.inf, 0.0, self.reference_magnitude_state)
@@ -171,7 +192,7 @@ class PDJAX():
 
         return
 
-
+    
     def compute_partial_volumes(self, thickness:np.ndarray):
 
         # Setup some local (to function) convenience variables
@@ -184,14 +205,21 @@ class PDJAX():
         # length calculation takes into account the partially #covered distances on either 
         # side of the horizon. 
 
+        print("neigh = ",neigh)
+
         # Initialize the volume_state to the lengths * width * thickness
         width = 1.0
         self.width = width
         self.thickness = thickness
         vol_state_uncorrected = lens[neigh] * thickness[neigh] * width 
 
+        #checking shapes of the arrays before placing zeros
+        #print("Shapes: ", ref_mag_state.shape, (lens[neigh] / 2.0).shape, vol_state_uncorrected.shape)
         # Place zeros in node locations that are not fully inside the support neighborhood nor have a partial volume
+        ################################################## this is the line where the shape sitch becomes an issue ###################################################
         vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
+
+
 
         # Check to see if the neighboring node has a partial volume
         is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
@@ -199,6 +227,9 @@ class PDJAX():
         # Two different scenarios:
         is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
         is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
+
+
+        print("Shapes: ", ref_mag_state.shape, (lens[neigh] / 2.0).shape, vol_state_uncorrected.shape)
 
         # Compute the partial volumes conditionally
         vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[neigh], vol_state)
@@ -224,8 +255,7 @@ class PDJAX():
 
         return
 
-    def introduce_flaw(self, location:float, allow_damage=False):
-
+    def introduce_flaw(self, location:float, allow_damage=False):  
         if allow_damage:
             self.allow_damage()
 
@@ -252,14 +282,14 @@ class PDJAX():
 
                 if min_node < location and location < max_node:
                     self.influence_state = self.influence_state.at[idx, bond_idx].set(0.2)
-
         return
 
     # Compute the force vector-state using a LPS peridynamic formulation
     def compute_force_state_LPS(self, 
                                 disp:jax.Array, 
                                 inf_state:jax.Array) -> Tuple[jax.Array, jax.Array]:
-            
+         
+
         #Define some local convenience variables     
         ref_pos = self.pd_nodes 
         ref_pos_state = self.reference_position_state
@@ -508,4 +538,3 @@ if __name__ == "__main__":
     #thickness = 1
     result = jax.scipy.optimize.minimize(loss, guess, args=(problem1,), method='BFGS')
     #print(result)
-
