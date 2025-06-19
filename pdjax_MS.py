@@ -206,12 +206,8 @@ class PDJAX():
         self.reference_position_state = self.pd_nodes[self.neighborhood] - self.pd_nodes[:,None]
         #print("self.ref_pos_st: ",self.reference_position_state)
 
-
-
         # Compute the partial volumes
-        vol_state,rev_vol_state=self.compute_partial_volumes(width, thickness)
-
-        
+        vol_state, rev_vol_state = self.compute_partial_volumes(width, thickness)
 
         # Cleanup reference_magnitude_state
         self.reference_magnitude_state = jnp.where(self.reference_magnitude_state == np.inf, 0.0, self.reference_magnitude_state)
@@ -264,6 +260,7 @@ class PDJAX():
         inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
 
         return(vol_state, rev_vol_state, inf_state)
+
     
     def compute_partial_volumes(self, width, thickness:np.ndarray):
 
@@ -274,7 +271,7 @@ class PDJAX():
         horiz = self.horizon
 
         # implementing a lower bound for thickness
-        thickness = jnp.clip(thickness, 1e-3, None)  # Prevent zero/negative thickness
+        # thickness = jnp.clip(thickness, 1e-3, None)  # Prevent zero/negative thickness
         #problem1.thickness = thickness  # Update the thickness in the problem object  
 
         #jax.debug.print("t in comp part vol: {}",thickness)

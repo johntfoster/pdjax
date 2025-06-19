@@ -14,15 +14,10 @@ import matplotlib.pyplot as plt
 import jax.scipy
 import jax.scipy.optimize
 from jax.scipy.optimize import minimize
+from jax.nn import softplus
 
 from jax import grad, jit
 
-#from jax.scipy.optimize import minimize
-
-#import jax
-#import jax.numpy as jnp
-#from jax import grad, jit
-#import numpy as np
 
 from typing import Union, Tuple
 
@@ -53,7 +48,9 @@ class PDJAX():
                  density:float=1.0,
                  thickness:Union[float, np.ndarray]=1.0,
                  horizon:Union[float, None]=None,
-                 critical_stretch:Union[float, None] = None
+                 critical_stretch:Union[float, None] = None,
+                 prescribed_velocity:Union[float, None]=None, 
+                 prescribed_traction:Union[float, None]=None
                  ) -> None:
         '''
            Initialization function
@@ -80,13 +77,13 @@ class PDJAX():
             self.horizon = delta_x * 3.015
 
         if isinstance(thickness, float):
-            thickness = jnp.ones(number_of_elements) * thickness
+            self.thickness = jnp.ones(number_of_elements) * thickness
         elif isinstance(thickness, np.ndarray):
-            thickness = jnp.asarray(thickness)
+            self.thickness = jnp.asarray(thickness)
             assert thickness.shape[0] == number_of_elements, ValueError("Thickness array length must match number of elements")
 
         # Compute the pd_node locations, kdtree, nns, reference_position_state, etc.
-        self.setup_discretization(thickness)
+        self.setup_discretization(self.thickness)
 
         # Debug plotting
         # _, ax = plt.subplots()
@@ -98,15 +95,43 @@ class PDJAX():
         if self.critical_stretch is not None:
             self.allow_damage() 
 
-        return
+        # Set boundary regions
+        if prescribed_velocity is not None and prescribed_traction is not None:
+            raise ValueError("Only one of prescribed_velocity or prescribed_traction should be set, not both.")
+        
+        if prescribed_velocity is None and prescribed_traction is None:
+            raise ValueError("Either prescribed_velocity or prescribed_traction must be set.")
 
-    def reset(self, thickness):
-        self.displacement = self.displacement.at[:].set(0.0)
-        self.velocity = self.velocity.at[:].set(0.0)
-        self.acceleration = self.acceleration.at[:].set(0.0)
-        self.influence_state = self.acceleration.at[:].set(0.0)
+        self.prescribed_velocity = prescribed_velocity
+        self.prescribed_traction = prescribed_traction
 
-        self.compute_partial_volumes(thickness)
+        #:The node indices of the boundary region at the left end of the bar
+        li = 0
+        self.left_bc_mask = self.neighborhood[li] != li
+        self.left_bc_region = self.neighborhood[li][self.left_bc_mask]
+
+        #:The node indices of the boundary region at the right end of the bar
+        ri = self.num_nodes - 1
+        self.right_bc_mask = self.neighborhood[ri] != ri
+        self.right_bc_region = self.neighborhood[ri][self.right_bc_mask]
+
+        if prescribed_velocity is not None:
+            self.left_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+            self.right_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+
+        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+        #:The node indices of the boundary region at the right end of the bar
+        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+
+
+        # Compute the partial volumes
+        vol_state, _ = self.compute_partial_volumes(self.thickness)
+
+        # An  array containing the *influence vector-state* as defined in Silling et al. 2007
+        # ratio = self.reference_magnitude_state / self.horizon
+        # self.influence_state = jnp.ones_like(self.volume_state) - 35.0 * ratio ** 4.0 + 84.0 * ratio ** 5.0 - 70 * ratio ** 6.0 + 20 * ratio ** 7.0
+        self.influence_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
+
         return
 
 
@@ -114,9 +139,8 @@ class PDJAX():
         self._allow_damage = True
         return
 
-
     
-    def setup_discretization(self, thickness:np.ndarray):
+    def setup_discretization(self, thickness:jax.Array):
         
         nodes = self.nodes
 
@@ -155,11 +179,6 @@ class PDJAX():
         #switching to slicing instead of jnp.delete
         self.reference_magnitude_state = reference_magnitude_state[0:, :self.max_neighbors]
 
-        #printing to look into the shape of all the things 
-        #print("self.max_neighbors = ",self.max_neighbors)
-
-        #print(len(reference_magnitude_state))
-        #print(reference_magnitude_state)
 
         # Cleanup neighborhood
         row_indices = jnp.arange(neighborhood.shape[0]).reshape(-1, 1)
@@ -169,31 +188,14 @@ class PDJAX():
         # Compute the reference_position_state.  Using the terminology of Silling et al. 2007
         self.reference_position_state = self.pd_nodes[self.neighborhood] - self.pd_nodes[:,None]
 
-        # Compute the partial volumes
-        self.compute_partial_volumes(thickness)
-
-
-        #line to try to fix broadcasting error
-        #reference_magnitude_state = jnp.array(reference_magnitude_state[:, :6])
-
         # Cleanup reference_magnitude_state
         self.reference_magnitude_state = jnp.where(self.reference_magnitude_state == np.inf, 0.0, self.reference_magnitude_state)
-
-        # A Numpy masked array containing the *influence vector-state* as defined in Silling et al. 2007
-        # ratio = self.reference_magnitude_state / self.horizon
-        # self.influence_state = jnp.ones_like(self.volume_state) - 35.0 * ratio ** 4.0 + 84.0 * ratio ** 5.0 - 70 * ratio ** 6.0 + 20 * ratio ** 7.0
-        self.influence_state = jnp.where(self.volume_state > 1.0e-16, 1.0, 0.0)
-        #
-        # The fields
-        self.displacement = jnp.zeros_like(self.pd_nodes)
-        self.velocity = jnp.zeros_like(self.pd_nodes)
-        self.acceleration = jnp.zeros_like(self.pd_nodes)
 
 
         return
 
     
-    def compute_partial_volumes(self, thickness:np.ndarray):
+    def compute_partial_volumes(self, thickness:jax.Array):
 
         # Setup some local (to function) convenience variables
         neigh = self.neighborhood
@@ -201,25 +203,18 @@ class PDJAX():
         ref_mag_state = self.reference_magnitude_state
         horiz = self.horizon
 
-        # Compute the volume_state, where the nodal volume = length * width * thickness, 
-        # length calculation takes into account the partially #covered distances on either 
-        # side of the horizon. 
-
-        print("neigh = ",neigh)
 
         # Initialize the volume_state to the lengths * width * thickness
         width = 1.0
         self.width = width
-        self.thickness = thickness
         vol_state_uncorrected = lens[neigh] * thickness[neigh] * width 
 
-        #checking shapes of the arrays before placing zeros
-        #print("Shapes: ", ref_mag_state.shape, (lens[neigh] / 2.0).shape, vol_state_uncorrected.shape)
-        # Place zeros in node locations that are not fully inside the support neighborhood nor have a partial volume
-        ################################################## this is the line where the shape sitch becomes an issue ###################################################
+        #Zero out entries that are not in the family
+        vol_state_uncorrected = jnp.where(ref_mag_state < 1.0e-16, 0.0, vol_state_uncorrected) 
+        # print(vol_state_uncorrected)
+
         vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
-
-
+        #print("vol_state:", vol_state)
 
         # Check to see if the neighboring node has a partial volume
         is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
@@ -228,8 +223,6 @@ class PDJAX():
         is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
         is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
 
-
-        print("Shapes: ", ref_mag_state.shape, (lens[neigh] / 2.0).shape, vol_state_uncorrected.shape)
 
         # Compute the partial volumes conditionally
         vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[neigh], vol_state)
@@ -250,12 +243,13 @@ class PDJAX():
         rev_vol_state = jnp.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
 
         # Set attributes
-        self.volume_state = vol_state
-        self.reverse_volume_state = rev_vol_state
+        # self.volume_state = vol_state
+        # self.reverse_volume_state = rev_vol_state
 
-        return
+        return (vol_state, rev_vol_state)
 
     def introduce_flaw(self, location:float, allow_damage=False):  
+
         if allow_damage:
             self.allow_damage()
 
@@ -287,6 +281,7 @@ class PDJAX():
     # Compute the force vector-state using a LPS peridynamic formulation
     def compute_force_state_LPS(self, 
                                 disp:jax.Array, 
+                                vol_state:jax.Array,
                                 inf_state:jax.Array) -> Tuple[jax.Array, jax.Array]:
          
 
@@ -294,7 +289,6 @@ class PDJAX():
         ref_pos = self.pd_nodes 
         ref_pos_state = self.reference_position_state
         ref_mag_state = self.reference_magnitude_state
-        vol_state = self.volume_state
         neigh = self.neighborhood
         K = self.bulk_modulus
 
@@ -320,9 +314,9 @@ class PDJAX():
         if self._allow_damage:
             inf_state = jnp.where(stretch  > self.critical_stretch, 0.0, inf_state)
             # Disallow damage on the boundary regions
-            undamaged_influence_state_left = self.influence_state.at[self.no_damage_region_left, :].get()
+            undamaged_influence_state_left = inf_state.at[self.no_damage_region_left, :].get()
             inf_state = inf_state.at[self.no_damage_region_left, :].set(undamaged_influence_state_left)
-            undamaged_influence_state_right = self.influence_state.at[self.no_damage_region_right, :].get()
+            undamaged_influence_state_right = inf_state.at[self.no_damage_region_right, :].get()
             inf_state = inf_state.at[self.no_damage_region_right, :].set(undamaged_influence_state_right)
             # jax.debug.print('IS: {infl}', infl=inf_state.at[:].get())
 
@@ -336,10 +330,15 @@ class PDJAX():
         # Compute the force state
         force_state = inf_state * scalar_force_state * def_unit_state
 
+        # jax.debug.print('force_state: {f}', f=force_state.at[:].get())
+
         return force_state, inf_state
 
     def compute_damage(self):
-        return 1 - self.influence_state.sum(axis=1) / self.num_neighbors
+        return self._compute_damage(self.influence_state)
+
+    def _compute_damage(self, inf_state:jax.Array):
+        return 1 - inf_state.sum(axis=1) / self.num_neighbors
 
 
     def smooth_ramp(self, t, t0, c=1.0, beta=5.0):
@@ -369,16 +368,14 @@ class PDJAX():
    
     # Internal force calculation
     @partial(jit, static_argnums=(0,))
-    def compute_internal_force(self, disp, inf_state, time):
+    def compute_internal_force(self, disp, vol_state, rev_vol_state, inf_state, time):
             
         # Define some local convenience variables     
-        vol_state = self.volume_state
-        rev_vol_state = self.reverse_volume_state
         neigh = self.neighborhood
         
         # Compute the force vector-state according to the choice of constitutive
         # model  
-        force_state, inf_state = self.compute_force_state_LPS(disp, inf_state)
+        force_state, inf_state = self.compute_force_state_LPS(disp, vol_state, inf_state)
 
         #Integrate nodal forces 
         force = (force_state * vol_state).sum(axis=1)
@@ -387,24 +384,26 @@ class PDJAX():
         if self.prescribed_traction is not None:
             li = 0
             ramp_traction = self.smooth_ramp(time, t0=1.e-5, c=self.prescribed_traction)  
-            left_bc_force_density = ramp_traction * (self.width * self.thickness[li]) / (vol_state[li].sum() + self.reverse_volume_state[li][0])
+            left_bc_force_density = ramp_traction * (self.width * self.thickness[li]) / (vol_state[li].sum() + rev_vol_state[li][0])
             left_bc_nodal_forces = left_bc_force_density * vol_state[li][self.left_bc_mask]
             force = force.at[self.left_bc_region].add(-left_bc_nodal_forces)
-            force = force.at[li].add(-left_bc_force_density * self.reverse_volume_state[li][li])
+            force = force.at[li].add(-left_bc_force_density * rev_vol_state[li][li])
             #
             ri = self.num_nodes - 1
-            right_bc_force_density = ramp_traction * (self.width * self.thickness[ri]) / (vol_state[ri].sum() + self.reverse_volume_state[ri][0])
+            right_bc_force_density = ramp_traction * (self.width * self.thickness[ri]) / (vol_state[ri].sum() + rev_vol_state[ri][0])
             right_bc_nodal_forces = right_bc_force_density * vol_state[ri][self.right_bc_mask]
             force = force.at[self.right_bc_region].add(right_bc_nodal_forces)
-            force = force.at[ri].add(right_bc_force_density * self.reverse_volume_state[ri][0])
+            force = force.at[ri].add(right_bc_force_density * rev_vol_state[ri][0])
 
 
         return force, inf_state
 
 
-    def solve_one_step(self, vals:Tuple[jax.Array, jax.Array, jax.Array, jax.Array, float]):
+    def solve_one_step(self, vals:Tuple[jax.Array, jax.Array, jax.Array, 
+                                        jax.Array, jax.Array, jax.Array, 
+                                        jax.Array, float]):
 
-        (disp, vel, acc, inf_state, time) = vals
+        (disp, vel, acc, vol_state, rev_vol_state, inf_state, time) = vals
 
         # TODO: Solve for stable time step
         time_step = 1.0e-9
@@ -416,67 +415,57 @@ class PDJAX():
             disp = disp.at[self.left_bc_region].set(f(self.pd_nodes[self.left_bc_region]))
             disp = disp.at[self.right_bc_region].set(f(self.pd_nodes[self.right_bc_region]))
 
-        force, inf_state = self.compute_internal_force(disp, inf_state, time)
+        force, inf_state = self.compute_internal_force(disp, vol_state, rev_vol_state, inf_state, time)
 
         acc_new = force / self.rho
         vel = vel.at[:].add(0.5 * (acc + acc_new) * time_step)
         disp = disp.at[:].add(vel * time_step + (0.5 * acc_new * time_step * time_step))
         acc = acc.at[:].set(acc_new)
 
-        return (disp, vel, acc, inf_state, time + time_step)
+        return (disp, vel, acc, vol_state, rev_vol_state, inf_state, time + time_step)
 
 
-    def solve(self, 
-              prescribed_velocity:Union[float, None]=None, 
-              prescribed_traction:Union[float, None]=None, 
+    def _solve(self, 
+              thickness:Union[jax.Array, None]=None,
               max_time:float=1.0):
         '''
             Solves in time using Verlet-Velocity
         '''
+        if thickness is None:
+            thickness = self.thickness
 
-        if prescribed_velocity is not None and prescribed_traction is not None:
-            raise ValueError("Only one of prescribed_velocity or prescribed_traction should be set, not both.")
-        
-        if prescribed_velocity is None and prescribed_traction is None:
-            raise ValueError("Either prescribed_velocity or prescribed_traction must be set.")
+        vol_state, rev_vol_state = self.compute_partial_volumes(thickness)
 
-        self.prescribed_velocity = prescribed_velocity
-        self.prescribed_traction = prescribed_traction
+        inf_state = self.influence_state.copy() 
 
-        #:The node indices of the boundary region at the left end of the bar
-        li = 0
-        self.left_bc_mask = self.neighborhood[li] != li
-        self.left_bc_region = self.neighborhood[li][self.left_bc_mask]
-
-        #:The node indices of the boundary region at the right end of the bar
-        ri = self.num_nodes - 1
-        self.right_bc_mask = self.neighborhood[ri] != ri
-        self.right_bc_region = self.neighborhood[ri][self.right_bc_mask]
-
-        if prescribed_velocity is not None:
-            self.left_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
-            self.right_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
-
-        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
-        #:The node indices of the boundary region at the right end of the bar
-        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
-        #Solve
-        disp = self.displacement
-        vel = self.velocity
-        acc = self.acceleration
-        inf_state = self.influence_state
+         
+        # The fields
+        disp = jnp.zeros_like(self.pd_nodes)
+        vel = jnp.zeros_like(self.pd_nodes)
+        acc = jnp.zeros_like(self.pd_nodes)
         time = 0.0
 
-        vals = (disp, vel, acc, inf_state, time)
-        vals = jax.lax.while_loop(lambda vals: vals[4] < max_time, self.solve_one_step, vals)
+        #Solve
+        vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, time)
+        vals = jax.lax.while_loop(lambda vals: vals[6] < max_time, self.solve_one_step, vals)
+
+        return vals
+
+
+    def solve(self, max_time:float=1.0):
+        '''
+            Solves in time using Verlet-Velocity
+        '''
+
+        vals = self._solve(max_time=max_time)
 
         self.displacement = vals[0]
         self.velocity = vals[1]
         self.acceleration = vals[2]
-        self.influence_state = vals[3]
+        self.influence_state = vals[5]
 
+        return 
 
-        return
 
     def get_solution(self):
         ''' Convenience function for retrieving displacement'''
@@ -487,18 +476,21 @@ class PDJAX():
         return self.pd_nodes
 
 
-def loss(thickness:jax.Array, problem:PDJAX):
+def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
 
-    problem.reset(thickness)
-    problem.solve(max_time=1.0e-3, prescribed_traction=1.0e8)
-    #problem.solve(max_time=1.0e-3, prescribed_velocity=1.0)
-    damage = problem.compute_damage()
+    thickness = softplus(thickness)
+    vals = problem._solve(thickness, max_time=max_time)
+    damage = problem._compute_damage(vals[5])
 
     mean_damage = damage.sum() / problem.num_nodes
+    max_damage = damage.max() 
     mean_thickness = thickness.sum() / problem.num_nodes
     max_thickness = thickness.max()
 
-    return 0.5 * mean_damage + 0.5 * mean_thickness / max_thickness
+    loss_value =  0.5 * max_damage + 0.5 * mean_thickness / max_thickness
+    jax.debug.print("loss: {l}", l=loss_value)
+
+    return loss_value
 
 
 ### Main Program ####
@@ -515,26 +507,28 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=0.5,
+                     thickness=1.0,
+                     prescribed_traction=1.0e8,
                      critical_stretch=1.0e-4)
 
     problem1.introduce_flaw(0.0)
-    #problem1.solve(max_time=1.0e-3, prescribed_traction=1E7)
-    # problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
-    #
+
+    # thickness = jnp.ones(problem1.num_nodes) * 0.5
+    # problem1.solve(max_time=1.0e-3)
+    # #
     # fig, ax = plt.subplots()
-    # ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k.')
+    # ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k-')
+    # ax.set_xlabel(r'$x$')
+    # ax.set_ylabel(r'displacement')
     # plt.show()
     
-    
-    #hicknessInit=np.array([])
+    key = jax.random.PRNGKey(0)  # Seed for reproducibility
 
-    #for i in range(0,problem1.number_of_elements):
-        #thicknessInit.append(1)
-    
-    #thicknessInit_jax=jnp.array(thicknessInit)
-    #thicknessInit= jnp.ones(problem1.number_of_elements)
-    guess = jnp.ones(problem1.number_of_elements)
-    #thickness = 1
-    result = jax.scipy.optimize.minimize(loss, guess, args=(problem1,), method='BFGS')
-    #print(result)
+    # Create a random array with values between 0.5 and 1.0
+    shape = (problem1.num_nodes,)  # Example shape (adjust as needed)
+    minval = 0.5
+    maxval = 1.0
+    thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS', tol=0.1)
+    print(result)
+
