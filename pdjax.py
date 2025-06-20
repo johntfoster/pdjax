@@ -487,7 +487,8 @@ def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
     mean_thickness = thickness.sum() / problem.num_nodes
     max_thickness = thickness.max()
 
-    loss_value =  0.5 * max_damage + 0.5 * mean_thickness / max_thickness
+    loss_value =  0.8 * max_damage + 0.2 * mean_thickness / max_thickness
+    # loss_value =  max_damage 
     jax.debug.print("loss: {l}", l=loss_value)
 
     return loss_value
@@ -529,6 +530,13 @@ if __name__ == "__main__":
     minval = 0.5
     maxval = 1.0
     thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS', tol=0.1)
-    print(result)
+    result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS')
+
+    opt_thickness = softplus(result.x)
+    vals = problem1._solve(thickness)
+    fig, ax = plt.subplots()
+    ax.plot(problem1.get_nodes(), vals[0], 'k-')
+    ax.set_xlabel(r'$x$')
+    ax.set_ylabel(r'displacement')
+    plt.show()
 
