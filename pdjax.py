@@ -76,11 +76,21 @@ class PDJAX():
         else:
             self.horizon = delta_x * 3.015
 
+        '''
         if isinstance(thickness, float):
             self.thickness = jnp.ones(number_of_elements) * thickness
         elif isinstance(thickness, np.ndarray):
             self.thickness = jnp.asarray(thickness)
             assert thickness.shape[0] == number_of_elements, ValueError("Thickness array length must match number of elements")
+        '''
+        if isinstance(thickness, float) or np.isscalar(thickness):
+            self.thickness = jnp.ones(number_of_elements) * thickness
+        elif isinstance(thickness, np.ndarray) or isinstance(thickness, jnp.ndarray):
+            self.thickness = jnp.asarray(thickness)
+            assert self.thickness.shape[0] == number_of_elements, ValueError("Thickness array length must match number of elements")
+        else:
+            raise ValueError("thickness must be a float or array")
+
 
         # Compute the pd_node locations, kdtree, nns, reference_position_state, etc.
         self.setup_discretization(self.thickness)
@@ -203,11 +213,13 @@ class PDJAX():
         ref_mag_state = self.reference_magnitude_state
         horiz = self.horizon
 
-
+        # jax.debug.print("thickness in comp par v: {t}",t=thickness)
         # Initialize the volume_state to the lengths * width * thickness
         width = 1.0
         self.width = width
         vol_state_uncorrected = lens[neigh] * thickness[neigh] * width 
+
+        # jax.debug.print("vol_state_unc in com p v: {v}", v=vol_state_uncorrected)
 
         #Zero out entries that are not in the family
         vol_state_uncorrected = jnp.where(ref_mag_state < 1.0e-16, 0.0, vol_state_uncorrected) 
@@ -311,12 +323,15 @@ class PDJAX():
         # jax.debug.print('stretch: {s}', s=stretch.at[:].get())
 
         # Apply a critical strech fracture criteria
-        if self._allow_damage:
+        if self._allow_damage :
+
+            undamaged_influence_state_left = inf_state.at[self.no_damage_region_left, :].get()
+            undamaged_influence_state_right = inf_state.at[self.no_damage_region_right, :].get()
+            
             inf_state = jnp.where(stretch  > self.critical_stretch, 0.0, inf_state)
             # Disallow damage on the boundary regions
-            undamaged_influence_state_left = inf_state.at[self.no_damage_region_left, :].get()
+
             inf_state = inf_state.at[self.no_damage_region_left, :].set(undamaged_influence_state_left)
-            undamaged_influence_state_right = inf_state.at[self.no_damage_region_right, :].get()
             inf_state = inf_state.at[self.no_damage_region_right, :].set(undamaged_influence_state_right)
             # jax.debug.print('IS: {infl}', infl=inf_state.at[:].get())
 
@@ -338,6 +353,11 @@ class PDJAX():
         return self._compute_damage(self.influence_state)
 
     def _compute_damage(self, inf_state:jax.Array):
+        jax.debug.print("inf_state in dam: {i}",i=inf_state)
+        jax.debug.print("inf_state.sum in dam: {i}",i=inf_state.sum(axis=1))     
+        intDam = 1 - inf_state.sum(axis=1) / self.num_neighbors
+        jax.debug.print("int_inf_state: {iD}",iD=intDam)
+        
         return 1 - inf_state.sum(axis=1) / self.num_neighbors
 
 
@@ -368,14 +388,17 @@ class PDJAX():
    
     # Internal force calculation
     @partial(jit, static_argnums=(0,))
-    def compute_internal_force(self, disp, vol_state, rev_vol_state, inf_state, time):
+    def compute_internal_force(self, disp, vol_state, rev_vol_state, inf_state, thickness, time):
             
         # Define some local convenience variables     
         neigh = self.neighborhood
         
         # Compute the force vector-state according to the choice of constitutive
-        # model  
+        # model 
+        # jax.debug.print("inf_state before c_f_st: {i}",i=inf_state) 
         force_state, inf_state = self.compute_force_state_LPS(disp, vol_state, inf_state)
+        # jax.debug.print("inf_state after c_f_st: {i}",i=inf_state) 
+
 
         #Integrate nodal forces 
         force = (force_state * vol_state).sum(axis=1)
@@ -384,13 +407,13 @@ class PDJAX():
         if self.prescribed_traction is not None:
             li = 0
             ramp_traction = self.smooth_ramp(time, t0=1.e-5, c=self.prescribed_traction)  
-            left_bc_force_density = ramp_traction * (self.width * self.thickness[li]) / (vol_state[li].sum() + rev_vol_state[li][0])
+            left_bc_force_density = ramp_traction * (self.width * thickness[li]) / (vol_state[li].sum() + rev_vol_state[li][0])
             left_bc_nodal_forces = left_bc_force_density * vol_state[li][self.left_bc_mask]
             force = force.at[self.left_bc_region].add(-left_bc_nodal_forces)
             force = force.at[li].add(-left_bc_force_density * rev_vol_state[li][li])
             #
             ri = self.num_nodes - 1
-            right_bc_force_density = ramp_traction * (self.width * self.thickness[ri]) / (vol_state[ri].sum() + rev_vol_state[ri][0])
+            right_bc_force_density = ramp_traction * (self.width * thickness[ri]) / (vol_state[ri].sum() + rev_vol_state[ri][0])
             right_bc_nodal_forces = right_bc_force_density * vol_state[ri][self.right_bc_mask]
             force = force.at[self.right_bc_region].add(right_bc_nodal_forces)
             force = force.at[ri].add(right_bc_force_density * rev_vol_state[ri][0])
@@ -401,12 +424,12 @@ class PDJAX():
 
     def solve_one_step(self, vals:Tuple[jax.Array, jax.Array, jax.Array, 
                                         jax.Array, jax.Array, jax.Array, 
-                                        jax.Array, float]):
+                                        jax.Array, jax.Array, float]):
 
-        (disp, vel, acc, vol_state, rev_vol_state, inf_state, time) = vals
+        (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, time) = vals
 
         # TODO: Solve for stable time step
-        time_step = 1.0e-9
+        time_step = 1.0e-6
 
         if self.prescribed_velocity is not None:
             bc_value = self.prescribed_velocity * time
@@ -415,14 +438,14 @@ class PDJAX():
             disp = disp.at[self.left_bc_region].set(f(self.pd_nodes[self.left_bc_region]))
             disp = disp.at[self.right_bc_region].set(f(self.pd_nodes[self.right_bc_region]))
 
-        force, inf_state = self.compute_internal_force(disp, vol_state, rev_vol_state, inf_state, time)
+        force, inf_state = self.compute_internal_force(disp, vol_state, rev_vol_state, inf_state, thickness, time)
 
         acc_new = force / self.rho
         vel = vel.at[:].add(0.5 * (acc + acc_new) * time_step)
         disp = disp.at[:].add(vel * time_step + (0.5 * acc_new * time_step * time_step))
         acc = acc.at[:].set(acc_new)
 
-        return (disp, vel, acc, vol_state, rev_vol_state, inf_state, time + time_step)
+        return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, time + time_step)
 
 
     def _solve(self, 
@@ -436,9 +459,15 @@ class PDJAX():
 
         vol_state, rev_vol_state = self.compute_partial_volumes(thickness)
 
-        inf_state = self.influence_state.copy() 
 
-         
+        #jax.debug.print("vol_state aft comp p v: {vs}",vs=vol_state)
+        #jax.debug.print("rev_vol_s update: {rv}",rv=rev_vol_state)
+
+        inf_state = self.influence_state.copy() 
+        # Initialize a fresh influence state for this run
+        #inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
+
+        #jax.debug.print("inf_state update after where: {i}",i=inf_state)
         # The fields
         disp = jnp.zeros_like(self.pd_nodes)
         vel = jnp.zeros_like(self.pd_nodes)
@@ -446,8 +475,8 @@ class PDJAX():
         time = 0.0
 
         #Solve
-        vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, time)
-        vals = jax.lax.while_loop(lambda vals: vals[6] < max_time, self.solve_one_step, vals)
+        vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, time)
+        vals = jax.lax.while_loop(lambda vals: vals[7] < max_time, self.solve_one_step, vals)
 
         return vals
 
@@ -474,21 +503,53 @@ class PDJAX():
     def get_nodes(self):
         ''' Convenience function for retrieving peridynamic node locations'''
         return self.pd_nodes
-
-
-def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
-
-    thickness = softplus(thickness)
+    
+#def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
+def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-2):
+    '''
+    ###################################################
+    thickness = softplus(scalar) *jnp.ones(problem.number_of_elements)
+    #thickness = softplus(thickness)
     vals = problem._solve(thickness, max_time=max_time)
+    #jax.debug.print("inf_state in loss: {v}",v=vals[5])
     damage = problem._compute_damage(vals[5])
 
     mean_damage = damage.sum() / problem.num_nodes
     max_damage = damage.max() 
     mean_thickness = thickness.sum() / problem.num_nodes
     max_thickness = thickness.max()
+    max_all_thick = 10.0
 
-    loss_value =  0.8 * max_damage + 0.2 * mean_thickness / max_thickness
-    # loss_value =  max_damage 
+    loss_value = max_damage
+
+    #loss_value =  0.1 * max_damage + 0.9 * max_thickness / max_all_thick 
+
+    #loss_value =  0.125 * max_damage + 0.875 * mean_thickness / max_thickness
+
+    #loss_value = 0.9 * max_damage + 0.1 * max_thickness
+
+    #loss_value = max_damage / max_thickness + max_damage
+    #loss_value = 0.1 * max_damage + 0.9 * ((max_thickness / max_all_thick) ** 2)
+    #####################################################################
+    '''
+    thickness = thickness[0] * jnp.ones(problem.number_of_elements)
+    #thickness = softplus(thickness[0]) * jnp.ones(problem.number_of_elements)
+    # jax.debug.print("thickness in loss: {th}",th=thickness)
+    vals = problem._solve(thickness, max_time=max_time)
+    damage = problem._compute_damage(vals[5])
+
+    mean_thickness = thickness.sum() / problem.num_nodes
+    max_thickness = thickness.max()
+    max_damage = damage.max()
+    mean_damage = damage.sum() / problem.num_nodes
+
+    #loss_value = max_damage + mean_damage
+    loss_value = max_damage
+
+    jax.debug.print("max dam: {md}", md=max_damage)
+    jax.debug.print("mean dam: {MD}", MD=mean_damage)
+    jax.debug.print("mean thick: {mt}",mt=mean_thickness)
+    jax.debug.print("max thick: {MT}",MT=max_thickness)
     jax.debug.print("loss: {l}", l=loss_value)
 
     return loss_value
@@ -508,20 +569,24 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=1.0,
-                     prescribed_traction=1.0e8,
+                     thickness=0.25,
+                     prescribed_traction=1.0e9,
                      critical_stretch=1.0e-4)
 
-    problem1.introduce_flaw(0.0)
+    # problem1.introduce_flaw(0.0)
 
     # thickness = jnp.ones(problem1.num_nodes) * 0.5
     # problem1.solve(max_time=1.0e-3)
     # #
+    # print(vals[0])
+
     # fig, ax = plt.subplots()
-    # ax.plot(problem1.get_nodes(), problem1.get_solution(), 'k-')
+    # ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
     # ax.set_xlabel(r'$x$')
     # ax.set_ylabel(r'displacement')
     # plt.show()
+
+
     
     key = jax.random.PRNGKey(0)  # Seed for reproducibility
 
@@ -530,13 +595,23 @@ if __name__ == "__main__":
     minval = 0.5
     maxval = 1.0
     thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS')
+    scalar_int = jnp.array([10.0])  # Make it a 1-element array
+    #thickness = jnp.ones(problem1.number_of_elements)
+    #thickness_scaled = 2.0 * thickness
+    
+    result = jax.scipy.optimize.minimize(loss, scalar_int, args=(problem1,), method='BFGS')
 
-    opt_thickness = softplus(result.x)
-    vals = problem1._solve(thickness)
+
+    print(vals[0])
+    opt_scalar = softplus(result.x)
+    opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
+    #opt_thickness = softplus(result.x)
+    vals = problem1._solve(opt_thickness)
     fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), vals[0], 'k-')
+    ax.plot(problem1.get_nodes(), vals[0], 'ko')
     ax.set_xlabel(r'$x$')
     ax.set_ylabel(r'displacement')
     plt.show()
+    
+
 
