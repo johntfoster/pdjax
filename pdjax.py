@@ -127,9 +127,9 @@ class PDJAX():
             self.left_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
             self.right_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
 
-        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(2.5*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
         #:The node indices of the boundary region at the right end of the bar
-        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(2.5*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
 
 
         # Compute the partial volumes
@@ -588,7 +588,7 @@ def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-3):
     
 
     ######## to optimize a singel scalar value for thickness
-    thickness = thickness[0] * jnp.ones(problem.number_of_elements)
+    #thickness = thickness[0] * jnp.ones(problem.number_of_elements)
     thickness = softplus(thickness[0]) * jnp.ones(problem.number_of_elements)
     jax.debug.print("thickness in loss: {th}",th=thickness)
     vals = problem._solve(thickness, max_time=max_time)
@@ -625,7 +625,7 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=0.25,
+                     thickness=0.5,
                      prescribed_traction=1.0e8,
                      critical_stretch=1.0e-4)
 
@@ -644,7 +644,7 @@ if __name__ == "__main__":
 
 
 
-    
+
     
     key = jax.random.PRNGKey(0)  # Seed for reproducibility
 
@@ -653,16 +653,18 @@ if __name__ == "__main__":
     minval = 0.25
     maxval = 2.0
     #thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    scalar_int = jnp.array([3.0])  # Make it a 1-element array
+    scalar_int = jnp.array([2.0])  # Make it a 1-element array
     #thickness = jnp.ones(problem1.number_of_elements)
     #thickness_scaled = 2.0 * thickness
 
-    result = jax.scipy.optimize.minimize(loss, scalar_int, args=(problem1,), method='BFGS')
-    #result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS') 
+    #problem1.solve(max_time=1.0e-3)
 
-    init_thick = scalar_int[0] * jnp.ones(problem1.number_of_elements)
+
+    init_thick = softplus(scalar_int[0]) * jnp.ones(problem1.number_of_elements)
     #opt_scalar = softplus(result.x)
     #opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
+
+    result = jax.scipy.optimize.minimize(loss, init_thick, args=(problem1,), method='BFGS') 
 
     #opt_thickness = softplus(result.x)
     vals = problem1._solve(init_thick)
@@ -672,4 +674,3 @@ if __name__ == "__main__":
     ax.set_xlabel(r'$x$')
     ax.set_ylabel(r'displacement')
     plt.show()
-    
