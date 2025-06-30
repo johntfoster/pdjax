@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
 from functools import partial
 
 import jax
@@ -142,6 +140,11 @@ class PDJAX():
         # self.influence_state = jnp.ones_like(self.volume_state) - 35.0 * ratio ** 4.0 + 84.0 * ratio ** 5.0 - 70 * ratio ** 6.0 + 20 * ratio ** 7.0
         self.influence_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
 
+        self.undamaged_influence_state = self.influence_state.copy()
+
+        self.undamaged_influence_state_left = self.influence_state.at[self.no_damage_region_left, :].get()
+        self.undamaged_influence_state_right = self.influence_state.at[self.no_damage_region_right, :].get()
+
         return
 
 
@@ -224,6 +227,13 @@ class PDJAX():
         #Zero out entries that are not in the family
         vol_state_uncorrected = jnp.where(ref_mag_state < 1.0e-16, 0.0, vol_state_uncorrected) 
         # print(vol_state_uncorrected)
+
+        #jax.debug.print("lens: {l}", l=lens)
+        #jax.debug.print("thickness: {t}", t=thickness)
+        #jax.debug.print("neigh: {n}", n=neigh)
+        #jax.debug.print("ref_mag_state: {r}", r=ref_mag_state)
+        #jax.debug.print("vol_state_uncorrected: {v}", v=vol_state_uncorrected)
+        #jax.debug.print("vol_state: {v}", v=vol_state)
 
         vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
         #print("vol_state:", vol_state)
@@ -324,20 +334,20 @@ class PDJAX():
 
         # Apply a critical strech fracture criteria
         if self._allow_damage :
-
-            undamaged_influence_state_left = inf_state.at[self.no_damage_region_left, :].get()
-            undamaged_influence_state_right = inf_state.at[self.no_damage_region_right, :].get()
             
             inf_state = jnp.where(stretch  > self.critical_stretch, 0.0, inf_state)
             # Disallow damage on the boundary regions
 
-            inf_state = inf_state.at[self.no_damage_region_left, :].set(undamaged_influence_state_left)
-            inf_state = inf_state.at[self.no_damage_region_right, :].set(undamaged_influence_state_right)
+            inf_state = inf_state.at[self.no_damage_region_left, :].set(self.undamaged_influence_state_left)
+            inf_state = inf_state.at[self.no_damage_region_right, :].set(self.undamaged_influence_state_right)
             # jax.debug.print('IS: {infl}', infl=inf_state.at[:].get())
 
         # Compute the shape tensor (really a scalar because this is 1d), i.e. the "weighted volume" as 
         # defined in Silling et al. 2007
+        # added epsilon to prevent dividing by zero
+        epsilon = 1e-12 
         shape_tens = (inf_state * ref_pos_state * ref_pos_state * vol_state).sum(axis=1)
+        shape_tens = jnp.where(jnp.abs(shape_tens) < epsilon, epsilon, shape_tens)
 
         # Compute scalar force state for a elastic constitutive model
         scalar_force_state = 9.0 * K / shape_tens[:, None] * exten_state
@@ -352,13 +362,40 @@ class PDJAX():
     def compute_damage(self):
         return self._compute_damage(self.influence_state)
 
-    def _compute_damage(self, inf_state:jax.Array):
-        jax.debug.print("inf_state in dam: {i}",i=inf_state)
-        jax.debug.print("inf_state.sum in dam: {i}",i=inf_state.sum(axis=1))     
-        intDam = 1 - inf_state.sum(axis=1) / self.num_neighbors
-        jax.debug.print("int_inf_state: {iD}",iD=intDam)
+    def _compute_damage(self,inf_state:jax.Array, vol_state:jax.Array, undamaged_inf_state:jax.Array):
+        #jax.debug.print("inf_state in dam: {i}",i=inf_state)
+        #jax.debug.print("inf_state.sum in dam: {i}",i=inf_state.sum(axis=1))   
+        epsilon = 1e-12
+        denom = (undamaged_inf_state * vol_state).sum(axis=1)
+        denom = jnp.where(jnp.abs(denom) < epsilon, epsilon, denom)
+
         
-        return 1 - inf_state.sum(axis=1) / self.num_neighbors
+        intDam = (inf_state * vol_state).sum(axis=1) / (undamaged_inf_state * vol_state).sum(axis=1)
+        #intDam = (inf_state * vol_state).sum(axis=1) / (self.undamaged_influence_state * vol_state).sum(axis=1)
+        # jax.debug.print(" dam / undam state sums: {i}",i=intDam)
+        #jax.debug.print(" new dam shape: {i}",i=intDam.shape)
+
+        #jax.debug.print(" new dam : {i}",i=intDam)
+
+        #jax.debug.print("self.undamaged_infl_st: {s}",s=self.undamaged_influence_state)
+        #jax.debug.print("vol_state: {v}",v=vol_state)
+        #jax.debug.print("inf_state in dam: {i}",i=inf_state)
+
+        intDamOG =inf_state.sum(axis=1) / self.num_neighbors
+        #jax.debug.print(" OG dam: {i}",i=intDamOG)
+        #jax.debug.print(" OG dam shape: {i}",i=intDamOG.shape)
+
+        
+        #return 1 - intDamOG
+        #return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
+
+        return 1 - (inf_state * vol_state).sum(axis=1) / denom
+
+
+
+
+
+
 
 
     def smooth_ramp(self, t, t0, c=1.0, beta=5.0):
@@ -424,12 +461,13 @@ class PDJAX():
 
     def solve_one_step(self, vals:Tuple[jax.Array, jax.Array, jax.Array, 
                                         jax.Array, jax.Array, jax.Array, 
-                                        jax.Array, jax.Array, float]):
+                                        jax.Array, jax.Array, jax.Array, float]):
 
-        (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, time) = vals
+        (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, time) = vals
 
         # TODO: Solve for stable time step
         time_step = 1.0e-6
+
 
         if self.prescribed_velocity is not None:
             bc_value = self.prescribed_velocity * time
@@ -445,7 +483,7 @@ class PDJAX():
         disp = disp.at[:].add(vel * time_step + (0.5 * acc_new * time_step * time_step))
         acc = acc.at[:].set(acc_new)
 
-        return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, time + time_step)
+        return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness,undamaged_inf_state, time + time_step)
 
 
     def _solve(self, 
@@ -454,6 +492,10 @@ class PDJAX():
         '''
             Solves in time using Verlet-Velocity
         '''
+        #jax.debug.print("max_time: {t}",t=max_time)
+        time_step = 1.0e-6
+        num_steps = int(max_time / time_step)
+
         if thickness is None:
             thickness = self.thickness
 
@@ -464,6 +506,7 @@ class PDJAX():
         #jax.debug.print("rev_vol_s update: {rv}",rv=rev_vol_state)
 
         inf_state = self.influence_state.copy() 
+        undamaged_inf_state = self.undamaged_influence_state.copy()
         # Initialize a fresh influence state for this run
         #inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
 
@@ -475,8 +518,19 @@ class PDJAX():
         time = 0.0
 
         #Solve
-        vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, time)
-        vals = jax.lax.while_loop(lambda vals: vals[7] < max_time, self.solve_one_step, vals)
+        vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, time)
+
+
+        #### added this section in place of while loop
+        ##### when implemented new more detailed damage funct it did not like while loop
+        def scan_step(vals, _):
+            return self.solve_one_step(vals), None
+
+        vals, _ = jax.lax.scan(scan_step, vals, None, length=num_steps)
+
+
+        #vals = jax.lax.while_loop(lambda vals: vals[8] < max_time, self.solve_one_step, vals)
+        #self.volume_state = vals[3]
 
         return vals
 
@@ -505,52 +559,54 @@ class PDJAX():
         return self.pd_nodes
     
 #def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
-def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-2):
-    '''
+def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-3):
+    
     ###################################################
-    thickness = softplus(scalar) *jnp.ones(problem.number_of_elements)
     #thickness = softplus(thickness)
-    vals = problem._solve(thickness, max_time=max_time)
+    #vals = problem._solve(thickness, max_time=max_time)
     #jax.debug.print("inf_state in loss: {v}",v=vals[5])
-    damage = problem._compute_damage(vals[5])
+    #jax.debug.print("vol_state: {v}",v=vals[3])
+    #damage = problem._compute_damage(vals[5],vals[3],vals[7])
 
-    mean_damage = damage.sum() / problem.num_nodes
-    max_damage = damage.max() 
-    mean_thickness = thickness.sum() / problem.num_nodes
-    max_thickness = thickness.max()
-    max_all_thick = 10.0
+   # mean_damage = damage.sum() / problem.num_nodes
+    #max_damage = damage.max() 
+    #mean_thickness = thickness.sum() / problem.num_nodes
+    #max_thickness = thickness.max()
+    #max_all_thick = 10.0
 
-    loss_value = max_damage
+    #loss_value = max_damage
 
     #loss_value =  0.1 * max_damage + 0.9 * max_thickness / max_all_thick 
 
-    #loss_value =  0.125 * max_damage + 0.875 * mean_thickness / max_thickness
+    # loss_value =  0.4 * max_damage + 0.6  * mean_thickness / max_thickness
 
     #loss_value = 0.9 * max_damage + 0.1 * max_thickness
 
     #loss_value = max_damage / max_thickness + max_damage
     #loss_value = 0.1 * max_damage + 0.9 * ((max_thickness / max_all_thick) ** 2)
     #####################################################################
-    '''
-    thickness = thickness[0] * jnp.ones(problem.number_of_elements)
-    #thickness = softplus(thickness[0]) * jnp.ones(problem.number_of_elements)
-    # jax.debug.print("thickness in loss: {th}",th=thickness)
-    vals = problem._solve(thickness, max_time=max_time)
-    damage = problem._compute_damage(vals[5])
+    
 
-    mean_thickness = thickness.sum() / problem.num_nodes
-    max_thickness = thickness.max()
+    ######## to optimize a singel scalar value for thickness
+    thickness = thickness[0] * jnp.ones(problem.number_of_elements)
+    thickness = softplus(thickness[0]) * jnp.ones(problem.number_of_elements)
+    jax.debug.print("thickness in loss: {th}",th=thickness)
+    vals = problem._solve(thickness, max_time=max_time)
+
+
+    damage = problem._compute_damage(vals[5],vals[3],vals[7])
+
     max_damage = damage.max()
     mean_damage = damage.sum() / problem.num_nodes
 
     #loss_value = max_damage + mean_damage
-    loss_value = max_damage
+    loss_value = mean_damage
 
     jax.debug.print("max dam: {md}", md=max_damage)
     jax.debug.print("mean dam: {MD}", MD=mean_damage)
-    jax.debug.print("mean thick: {mt}",mt=mean_thickness)
-    jax.debug.print("max thick: {MT}",MT=max_thickness)
     jax.debug.print("loss: {l}", l=loss_value)
+
+    
 
     return loss_value
 
@@ -570,48 +626,50 @@ if __name__ == "__main__":
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
                      thickness=0.25,
-                     prescribed_traction=1.0e9,
+                     prescribed_traction=1.0e8,
                      critical_stretch=1.0e-4)
 
-    # problem1.introduce_flaw(0.0)
+    #problem1.introduce_flaw(0.0)
 
-    # thickness = jnp.ones(problem1.num_nodes) * 0.5
-    # problem1.solve(max_time=1.0e-3)
+    #thickness = jnp.ones(problem1.num_nodes) * 0.5
+    #problem1.solve(max_time=1.0e-3)
     # #
-    # print(vals[0])
+    #print(vals[0])
 
-    # fig, ax = plt.subplots()
-    # ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
-    # ax.set_xlabel(r'$x$')
-    # ax.set_ylabel(r'displacement')
-    # plt.show()
+    #fig, ax = plt.subplots()
+    #ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
+    #ax.set_xlabel(r'$x$')
+    #ax.set_ylabel(r'displacement')
+    #plt.show()
 
 
+
+    
     
     key = jax.random.PRNGKey(0)  # Seed for reproducibility
 
     # Create a random array with values between 0.5 and 1.0
     shape = (problem1.num_nodes,)  # Example shape (adjust as needed)
-    minval = 0.5
-    maxval = 1.0
-    thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    scalar_int = jnp.array([10.0])  # Make it a 1-element array
+    minval = 0.25
+    maxval = 2.0
+    #thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    scalar_int = jnp.array([3.0])  # Make it a 1-element array
     #thickness = jnp.ones(problem1.number_of_elements)
     #thickness_scaled = 2.0 * thickness
-    
+
     result = jax.scipy.optimize.minimize(loss, scalar_int, args=(problem1,), method='BFGS')
+    #result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS') 
 
+    init_thick = scalar_int[0] * jnp.ones(problem1.number_of_elements)
+    #opt_scalar = softplus(result.x)
+    #opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
 
-    print(vals[0])
-    opt_scalar = softplus(result.x)
-    opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
     #opt_thickness = softplus(result.x)
-    vals = problem1._solve(opt_thickness)
+    vals = problem1._solve(init_thick)
+    print(vals[0])
     fig, ax = plt.subplots()
     ax.plot(problem1.get_nodes(), vals[0], 'ko')
     ax.set_xlabel(r'$x$')
     ax.set_ylabel(r'displacement')
     plt.show()
     
-
-
