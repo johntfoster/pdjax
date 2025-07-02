@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 from functools import partial
 
 import jax
@@ -172,11 +174,16 @@ class PDJAX():
         # find all potential partial volume nodes as well. The distances returned from the
         # search turn out to be the reference_magnitude_state, so we'll store them now
         # to avoid needed to calculate later.
+        #set k=100, used to be k=6, will trim down later
         reference_magnitude_state, neighborhood = self.tree.query(self.pd_nodes[:,None], 
-                k=6, p=2, eps=0.0, distance_upper_bound=(self.horizon + np.max(self.lengths) / 2.0))
+                k=100, p=2, eps=0.0, distance_upper_bound=(self.horizon + np.max(self.lengths) / 2.0))
 
+        #jax.debug.print("ref_mag_state before: {r}",r=reference_magnitude_state)
         #trying to delete first column of ref_mag_state for broadcasting issue
         reference_magnitude_state = jnp.delete(reference_magnitude_state, 0, 1)  
+        jax.debug.print("ref_mag_state after initial trim: {r}",r=reference_magnitude_state )
+
+        #jax.debug.print("ref_mag_state.shape after: {r}",r=reference_magnitude_state.shape)
 
         self.num_neighbors = jnp.asarray((neighborhood != self.tree.n).sum(axis=1)) - 1
         self.max_neighbors = np.max((neighborhood != self.tree.n).sum(axis=1))
@@ -187,12 +194,15 @@ class PDJAX():
 
         #changed to select just the first row and alleviate the broadcasting error
         #self.reference_magnitude_state = jnp.delete(reference_magnitude_state[1, :self.max_neighbors], 0,0)
-        #gave [39,7] so feel like this is close
-        #self.reference_magnitude_state = jnp.delete(reference_magnitude_state[:, :self.max_neighbors], 0,0)
-        #switching to slicing instead of jnp.delete
-        self.reference_magnitude_state = reference_magnitude_state[0:, :self.max_neighbors]
 
+        #jax.debug.print("neighborhood.shape: {n}",n=neighborhood.shape)
+        #jax.debug.print("neighborhod: {n}",n=neighborhood)
 
+        self.reference_magnitude_state = reference_magnitude_state[0:, :self.max_neighbors-1]
+        #self.reference_magnitude_state = reference_magnitude_state[:, 1:self.max_neighbors]    
+        
+
+        jax.debug.print("self.ref_mag_state.shape later: {r}",r=self.reference_magnitude_state)
         # Cleanup neighborhood
         row_indices = jnp.arange(neighborhood.shape[0]).reshape(-1, 1)
         neighborhood = jnp.where(neighborhood == self.tree.n, row_indices, neighborhood)
@@ -203,6 +213,7 @@ class PDJAX():
 
         # Cleanup reference_magnitude_state
         self.reference_magnitude_state = jnp.where(self.reference_magnitude_state == np.inf, 0.0, self.reference_magnitude_state)
+        #jax.debug.print("self.ref_mag_state.shape at end of setup disc {r}",r=self.reference_magnitude_state.shape)
 
 
         return
@@ -216,19 +227,23 @@ class PDJAX():
         ref_mag_state = self.reference_magnitude_state
         horiz = self.horizon
 
+        jax.debug.print("neigh: {v}", v=neigh.shape)
+
         # jax.debug.print("thickness in comp par v: {t}",t=thickness)
         # Initialize the volume_state to the lengths * width * thickness
         width = 1.0
         self.width = width
         vol_state_uncorrected = lens[neigh] * thickness[neigh] * width 
 
-        # jax.debug.print("vol_state_unc in com p v: {v}", v=vol_state_uncorrected)
+        jax.debug.print("vol_state_unc in com p v: {v}", v=vol_state_uncorrected.shape)
+        jax.debug.print("ref_mag_state : {l}", l=ref_mag_state.shape)
 
         #Zero out entries that are not in the family
         vol_state_uncorrected = jnp.where(ref_mag_state < 1.0e-16, 0.0, vol_state_uncorrected) 
+        
         # print(vol_state_uncorrected)
 
-        #jax.debug.print("lens: {l}", l=lens)
+
         #jax.debug.print("thickness: {t}", t=thickness)
         #jax.debug.print("neigh: {n}", n=neigh)
         #jax.debug.print("ref_mag_state: {r}", r=ref_mag_state)
@@ -617,7 +632,9 @@ if __name__ == "__main__":
     #Define problem size
     fixed_length = 10.0 
     delta_x = 0.25
-    fixed_horizon = 2.6 * delta_x
+    fixed_horizon = 3.6 * delta_x
+    #increased horizon to 3.6 from 2.6, smoothes things out and makes them more stable
+    #error might have started then?
 
     #Instantiate a 1d peridynamic problem with equally spaced nodes
     problem1 = PDJAX(bar_length=fixed_length,
@@ -625,52 +642,55 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=0.5,
+                     thickness=5.0,
                      prescribed_traction=1.0e8,
                      critical_stretch=1.0e-4)
 
     #problem1.introduce_flaw(0.0)
 
-    #thickness = jnp.ones(problem1.num_nodes) * 0.5
-    #problem1.solve(max_time=1.0e-3)
+    thickness = jnp.ones(problem1.num_nodes) * 0.5
+    problem1.solve(max_time=1.0e-3)
     # #
     #print(vals[0])
 
-    #fig, ax = plt.subplots()
-    #ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
-    #ax.set_xlabel(r'$x$')
-    #ax.set_ylabel(r'displacement')
-    #plt.show()
+    fig, ax = plt.subplots()
+    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
+    ax.set_xlabel(r'$x$')
+    ax.set_ylabel(r'displacement')
+    plt.show()
 
 
 
 
     
-    key = jax.random.PRNGKey(0)  # Seed for reproducibility
+    #key = jax.random.PRNGKey(0)  # Seed for reproducibility
 
     # Create a random array with values between 0.5 and 1.0
-    shape = (problem1.num_nodes,)  # Example shape (adjust as needed)
-    minval = 0.25
-    maxval = 2.0
+    #shape = (problem1.num_nodes,)  # Example shape (adjust as needed)
+    #minval = 0.25
+    #maxval = 2.0
     #thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    scalar_int = jnp.array([2.0])  # Make it a 1-element array
+    #scalar_int = jnp.array([2.0])  # Make it a 1-element array
     #thickness = jnp.ones(problem1.number_of_elements)
     #thickness_scaled = 2.0 * thickness
 
     #problem1.solve(max_time=1.0e-3)
 
 
-    init_thick = softplus(scalar_int[0]) * jnp.ones(problem1.number_of_elements)
+    #init_thick = softplus(scalar_int[0]) * jnp.ones(problem1.number_of_elements)
     #opt_scalar = softplus(result.x)
     #opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
 
-    result = jax.scipy.optimize.minimize(loss, init_thick, args=(problem1,), method='BFGS') 
+    #result = jax.scipy.optimize.minimize(loss, init_thick, args=(problem1,), method='BFGS') 
 
     #opt_thickness = softplus(result.x)
-    vals = problem1._solve(init_thick)
-    print(vals[0])
-    fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), vals[0], 'ko')
-    ax.set_xlabel(r'$x$')
-    ax.set_ylabel(r'displacement')
-    plt.show()
+    #vals = problem1._solve(init_thick)
+    #print(vals[0])
+    #fig, ax = plt.subplots()
+    #ax.plot(problem1.get_nodes(), vals[0], 'ko')
+    #ax.set_xlabel(r'$x$')
+    #ax.set_ylabel(r'displacement')
+    #plt.show()
+    
+
+
