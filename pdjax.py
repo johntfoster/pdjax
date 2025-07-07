@@ -642,7 +642,7 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=5.0,
+                     thickness=10.0,
                      prescribed_traction=1.0e8,
                      critical_stretch=1.0e-4)
 
