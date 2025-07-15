@@ -221,7 +221,6 @@ class PDJAX():
         self.reference_magnitude_state = jnp.where(self.reference_magnitude_state == np.inf, 0.0, self.reference_magnitude_state)
         #jax.debug.print("self.ref_mag_state.shape at end of setup disc {r}",r=self.reference_magnitude_state.shape)
 
-
         return
 
     
@@ -562,7 +561,7 @@ class PDJAX():
         
 
         strain_energy_total = jnp.sum(strain_energy)
-        jax.debug.print("strain_energy_total in solve_one_step: {tse}", tse=strain_energy_total)
+        #jax.debug.print("strain_energy_total in solve_one_step: {tse}", tse=strain_energy_total)
 
         #return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, time + time_step)
         return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_total, time + time_step)
@@ -579,8 +578,6 @@ class PDJAX():
         time_step = 1.0e-6
         #time_step = 1.0e-6
         num_steps = int(max_time / time_step)
-
-        strain_energy_init = self.strain_energy_total
 
         if thickness is None:
             thickness = self.thickness
@@ -602,7 +599,10 @@ class PDJAX():
         vel = jnp.zeros_like(self.pd_nodes)
         acc = jnp.zeros_like(self.pd_nodes)
         time = 0.0
-        #strain_energy = jnp.ones(self.number_of_elements) 
+        strain_energy_init = self.strain_energy_total
+        #strain_energy = jnp.ones(self.number_of_elements)
+        #strain_energy_init = self.strain_energy_total
+        #strain_energy_init = 0.0 
 
     
 
@@ -616,20 +616,20 @@ class PDJAX():
         vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_init, time)
 
 
-        vals = jax.lax.fori_loop(0, num_steps, loop_body, vals)
+        #vals = jax.lax.fori_loop(0, num_steps, loop_body, vals)
 
         #### added this section in place of while loop
         ##### when implemented new more detailed damage funct it did not like while loop
-        '''
+        
         def scan_step(vals, _):
             return self.solve_one_step(vals), None
 
         vals, _ = jax.lax.scan(scan_step, vals, None, length=num_steps)
 
-        jax.debug.print("strain_energy_total in solve: {tse}", tse=jnp.sum(vals[8]))
+        #jax.debug.print("strain_energy_total in solve: {tse}", tse=jnp.sum(vals[8]))
         #vals = jax.lax.while_loop(lambda vals: vals[8] < max_time, self.solve_one_step, vals)
         #self.volume_state = vals[3]
-        '''
+        
 
         '''
         #added the following lines to calculate the vals within solve_one_step in place of while loop above
@@ -646,6 +646,7 @@ class PDJAX():
 
         '''
         jax.debug.print("final strain_energy_total in solve: {tse}", tse=jnp.sum(vals[8]))
+        jax.debug.print("thickness in solve: {i}", i=vals[6])
 
         
         return vals
@@ -664,6 +665,7 @@ class PDJAX():
         self.influence_state = vals[5]
         self.strain_energy_total = vals[8] 
 
+
         return 
 
 
@@ -676,7 +678,7 @@ class PDJAX():
         return self.pd_nodes
     
 #def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
-def loss(thickness, problem:PDJAX, max_time=1.0E-8):
+def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-8):
     
     ###################################################
     #jax.debug.print("thickness in loss: {th}", th=thickness)
@@ -685,21 +687,22 @@ def loss(thickness, problem:PDJAX, max_time=1.0E-8):
     #thickness = jnp.clip(thickness, a_min=min_thickness) 
     thickness = softplus(thickness)
     #jax.debug.print("thickness in loss: {th}", th=thickness)
+
     vals = problem._solve(thickness, max_time=max_time)
     
     #### set loss value to strain_energy #######
     ### using total strain energy of bar with thickness 1.0
-    normalizaion_factor = 50.0
+    normalization_factor = 50.0
     total_strain_energy = jnp.sum(vals[8])
     #loss_value = total_strain_energy / normalizaion_factor
     max_thickness = jnp.max(thickness)
     #loss_value = max_thickness
 
-    loss_value = 0.9 * (total_strain_energy/normalizaion_factor) + 0.1 * max_thickness
+    loss_value = 0.9 * (total_strain_energy/normalization_factor) + 0.1 * max_thickness
 
     
     jax.debug.print("max thickness: {mt}", mt=max_thickness)
-    jax.debug.print("total strain energy: {tse}", tse=total_strain_energy/normalizaion_factor)
+    jax.debug.print("total strain energy: {tse}", tse=total_strain_energy/normalization_factor)
     jax.debug.print("loss: {l}", l=loss_value)
     #####################################################################
 
@@ -718,17 +721,28 @@ if __name__ == "__main__":
     #increased horizon to 3.6 from 2.6, smoothes things out and makes them more stable
     #error might have started then?
 
+    # Initial parameter (scalar for thickness)
+    key = jax.random.PRNGKey(0)  # Seed for reproducibility
+
+    # Create a random array with values between 0.5 and 1.0
+    shape = (fixed_length/delta_x,)  # Example shape (adjust as needed)
+    #minval = 1.15
+    minval = 0.5
+    maxval = 1.15
+    #thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    thickness = 1.5
+
     #Instantiate a 1d peridynamic problem with equally spaced nodes
     problem1 = PDJAX(bar_length=fixed_length,
                      density=7850.0,
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=1.0,
+                     thickness=thickness,
                      prescribed_force=1.0e8,
                      critical_stretch=1.0e-4)
 
-    ######### to run forward problem ################
+    ######### to run forward problem ###############
     problem1.solve(max_time=1.0e-3)
     
 
@@ -739,9 +753,10 @@ if __name__ == "__main__":
     ax.set_ylabel(r'displacement')
     plt.show()
 
-    ##########################  Optimization Section ##########################
+    ################################################
 
-    '''
+    ############### to run optax optimization ###########
+        
     ################  now using optax to maximize ##########################
     # Initial parameter (scalar for thickness)
     key = jax.random.PRNGKey(0)  # Seed for reproducibility
@@ -787,8 +802,9 @@ if __name__ == "__main__":
 
     # Use the optimized thickness
     opt_thickness = softplus(param)
-    vals = problem1._solve(opt_thickness)
+    #vals = problem1._solve(opt_thickness)
     print("opt_thickness: ", opt_thickness)
+    '''
     print("disp: ", vals[0])
     fig, ax = plt.subplots()
     ax.plot(problem1.get_nodes(), vals[0], 'ko')
@@ -797,9 +813,10 @@ if __name__ == "__main__":
     plt.show()
     '''
 
-    
-    ################  now using scipy to minimize ##########################    
-      
+    ########################################################
+
+    ###############  scipy optimization ###########
+  
     '''
     #######################################
     #problem1.introduce_flaw(0.0)
@@ -849,7 +866,7 @@ if __name__ == "__main__":
 
 
     #opt_thickness = pt_scalar
-    vals = problem1._solve(opt_thickness)
+    #vals = problem1._solve(opt_thickness)
     print("opt_thickness: ",opt_thickness)
     #print("opt_thickness_no_softplus: ",opt_thickness_no_softplus)
     print("disp: ",vals[0])
@@ -860,3 +877,4 @@ if __name__ == "__main__":
     plt.show()
     ###################################################
     '''
+
