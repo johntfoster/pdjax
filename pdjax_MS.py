@@ -14,20 +14,12 @@ import matplotlib.pyplot as plt
 import jax.scipy
 import jax.scipy.optimize
 from jax.scipy.optimize import minimize
-#from jaxopt import ScipyMinimize
+from jax.nn import softplus
 
 from jax import grad, jit
 
-#from jax.scipy.optimize import minimize
-
-#import jax
-#import jax.numpy as jnp
-#from jax import grad, jit
-#import numpy as np
 
 from typing import Union, Tuple
-
-import matplotlib.pyplot as plt
 
 
 class PDJAX():
@@ -57,8 +49,8 @@ class PDJAX():
                  thickness:Union[float, np.ndarray]=1.0,
                  horizon:Union[float, None]=None,
                  critical_stretch:Union[float, None] = None,
-                 prescribed_velocity:Union[float, None] = None,
-                 prescribed_traction:Union[float, None] = None
+                 prescribed_velocity:Union[float, None]=None, 
+                 prescribed_traction:Union[float, None]=None
                  ) -> None:
         '''
            Initialization function
@@ -67,16 +59,9 @@ class PDJAX():
         #Problem data
         self.bulk_modulus = bulk_modulus
         self.rho = density
-        
 
         self.bar_length = bar_length
         self.number_of_elements = number_of_elements
-
-        self.prescribed_velocity = prescribed_velocity
-        self.prescribed_traction = prescribed_traction
-
-        width = 1.0
-        self.width = width
 
         delta_x = bar_length / number_of_elements
 
@@ -91,71 +76,88 @@ class PDJAX():
         else:
             self.horizon = delta_x * 3.015
 
+        '''
         if isinstance(thickness, float):
-            thickness = jnp.ones(number_of_elements) * thickness
+            self.thickness = jnp.ones(number_of_elements) * thickness
         elif isinstance(thickness, np.ndarray):
-            thickness = jnp.asarray(thickness)
+            self.thickness = jnp.asarray(thickness)
             assert thickness.shape[0] == number_of_elements, ValueError("Thickness array length must match number of elements")
+        '''
+        if isinstance(thickness, float) or np.isscalar(thickness):
+            self.thickness = jnp.ones(number_of_elements) * thickness
+        elif isinstance(thickness, np.ndarray) or isinstance(thickness, jnp.ndarray):
+            self.thickness = jnp.asarray(thickness)
+            assert self.thickness.shape[0] == number_of_elements, ValueError("Thickness array length must match number of elements")
+        else:
+            raise ValueError("thickness must be a float or array")
 
 
-        #thickness[20] = -0.01
-        #thickness=jnp.asarray(thickness)
-
-        
         # Compute the pd_node locations, kdtree, nns, reference_position_state, etc.
-        self.setup_discretization(thickness,width)
+        self.setup_discretization(self.thickness)
 
         # Debug plotting
         # _, ax = plt.subplots()
         # self.line, = ax.plot(self.pd_nodes, self.displacement)
-        self._allow_damage = True
+        self._allow_damage = False
 
         self.critical_stretch = critical_stretch
 
         if self.critical_stretch is not None:
             self.allow_damage() 
+
+        # Set boundary regions
+        if prescribed_velocity is not None and prescribed_traction is not None:
+            raise ValueError("Only one of prescribed_velocity or prescribed_traction should be set, not both.")
         
+        if prescribed_velocity is None and prescribed_traction is None:
+            raise ValueError("Either prescribed_velocity or prescribed_traction must be set.")
+
+        self.prescribed_velocity = prescribed_velocity
+        self.prescribed_traction = prescribed_traction
+
+        #:The node indices of the boundary region at the left end of the bar
+        li = 0
+        self.left_bc_mask = self.neighborhood[li] != li
+        self.left_bc_region = self.neighborhood[li][self.left_bc_mask]
+
+        #:The node indices of the boundary region at the right end of the bar
+        ri = self.num_nodes - 1
+        self.right_bc_mask = self.neighborhood[ri] != ri
+        self.right_bc_region = self.neighborhood[ri][self.right_bc_mask]
+
+        if prescribed_velocity is not None:
+            self.left_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+            self.right_bc_region = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+
+        self.no_damage_region_left = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[0, None], r=(2.5*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+        #:The node indices of the boundary region at the right end of the bar
+        self.no_damage_region_right = jnp.asarray(self.tree.query_ball_point(self.pd_nodes[-1, None], r=(2.5*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0)).sort()
+
+
+        # Compute the partial volumes
+        vol_state, _ = self.compute_partial_volumes(self.thickness)
+
+        # An  array containing the *influence vector-state* as defined in Silling et al. 2007
+        # ratio = self.reference_magnitude_state / self.horizon
+        # self.influence_state = jnp.ones_like(self.volume_state) - 35.0 * ratio ** 4.0 + 84.0 * ratio ** 5.0 - 70 * ratio ** 6.0 + 20 * ratio ** 7.0
+        self.influence_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
+
+        self.undamaged_influence_state = self.influence_state.copy()
+
+        self.undamaged_influence_state_left = self.influence_state.at[self.no_damage_region_left, :].get()
+        self.undamaged_influence_state_right = self.influence_state.at[self.no_damage_region_right, :].get()
 
         return
-
-    def reset(self, displacement, velocity, acceleration, influence_state, thickness, width):
-        '''
-            Resets the problem to the initial state, i.e. zero displacements, velocities, etc.
-        '''
-
-        displacement = displacement.at[:].set(0.0)
-        velocity = velocity.at[:].set(0.0)
-        acceleration = acceleration.at[:].set(0.0)
-        influence_state = jnp.where(..., 1.0, 0.0)
-
-        #isplacement = jnp.zeros_like(self.displacement)
-        #velocity = jnp.zeros_like(self.velocity)
-        #acceleration = jnp.zeros_like(self.acceleration)
-        #influence_state = jnp.where(self.volume_state > 1.0e-16, 1.0, 0.0)
-        # Compute partial volumes as needed, return as well if needed
-
-        #self.displacement = self.displacement.at[:].set(0.0)
-        #self.velocity = self.velocity.at[:].set(0.0)
-        #self.acceleration = self.acceleration.at[:].set(0.0)
-        #self.influence_state = jnp.where(self.volume_state > 1.0e-16, 1.0, 0.0)
-
-        vol_state,rev_vol_state=self.compute_partial_volumes(width, thickness)
-
-        return displacement, velocity, acceleration, influence_state
-
 
 
     def allow_damage(self):
         self._allow_damage = True
         return
 
-
     
-    def setup_discretization(self, thickness:np.ndarray, width):
+    def setup_discretization(self, thickness:jax.Array):
         
         nodes = self.nodes
-        prescribed_velocity = self.prescribed_velocity
-        #print("prescribed_velocity: ", prescribed_velocity)
 
         # The lengths of the *elements*
         self.lengths = jnp.array(nodes[1:] - nodes[0:-1]) 
@@ -164,105 +166,60 @@ class PDJAX():
         self.pd_nodes = jnp.array(nodes[0:-1] + self.lengths / 2.0)
         self.num_nodes = self.pd_nodes.shape[0]
 
-        # Creates a kdtree to do nearest neighbor search
-        # 2D array is created from this search 
-
+        # Create's a kdtree to do nearest neighbor search
         self.tree = scipy.spatial.cKDTree(self.pd_nodes[:,None])
-        #print(self.tree.data.shape)
+
 
         # Get PD nodes in the neighborhood of support + largest node spacing, this will
         # find all potential partial volume nodes as well. The distances returned from the
         # search turn out to be the reference_magnitude_state, so we'll store them now
         # to avoid needed to calculate later.
+        #set k=100, used to be k=6, will trim down later
         reference_magnitude_state, neighborhood = self.tree.query(self.pd_nodes[:,None], 
                 k=100, p=2, eps=0.0, distance_upper_bound=(self.horizon + np.max(self.lengths) / 2.0))
-     
+
+        #jax.debug.print("ref_mag_state before: {r}",r=reference_magnitude_state)
         #trying to delete first column of ref_mag_state for broadcasting issue
-        #reference_magnitude_state = jnp.delete(reference_magnitude_state, 0, 1)  
+        reference_magnitude_state = jnp.delete(reference_magnitude_state, 0, 1)  
+        #jax.debug.print("ref_mag_state after initial trim: {r}",r=reference_magnitude_state )
+
+        #jax.debug.print("ref_mag_state.shape after: {r}",r=reference_magnitude_state.shape)
 
         self.num_neighbors = jnp.asarray((neighborhood != self.tree.n).sum(axis=1)) - 1
-        self.max_neighbors = jnp.max((neighborhood != self.tree.n).sum(axis=1))
+        self.max_neighbors = np.max((neighborhood != self.tree.n).sum(axis=1))
 
         # Convert to JAX arrays and trim down excess neighbors
         neighborhood = jnp.asarray(neighborhood[:, :self.max_neighbors])
-        self.reference_magnitude_state = jnp.delete(reference_magnitude_state[:, :self.max_neighbors], 0,0)
+        #self.reference_magnitude_state = jnp.delete(reference_magnitude_state[:, :self.max_neighbors], 0,0)
 
         #changed to select just the first row and alleviate the broadcasting error
-        #self.reference_magnitude_state = jnp.delete(reference_magnitude_state[:, :self.max_neighbors], 0,0)
-        #switching to slicing instead of jnp.delete
-        # want to be able to delete the first column of reference_magnitude_state, 1: resolves broadcasting error here
-        self.reference_magnitude_state = reference_magnitude_state[0:, 1:self.max_neighbors]
-      
+        #self.reference_magnitude_state = jnp.delete(reference_magnitude_state[1, :self.max_neighbors], 0,0)
 
+        #jax.debug.print("neighborhood.shape: {n}",n=neighborhood.shape)
+        #jax.debug.print("neighborhod: {n}",n=neighborhood)
 
+        self.reference_magnitude_state = reference_magnitude_state[0:, :self.max_neighbors-1]
+        #self.reference_magnitude_state = reference_magnitude_state[:, 1:self.max_neighbors]    
+        
+
+        #jax.debug.print("self.ref_mag_state.shape later: {r}",r=self.reference_magnitude_state)
         # Cleanup neighborhood
         row_indices = jnp.arange(neighborhood.shape[0]).reshape(-1, 1)
         neighborhood = jnp.where(neighborhood == self.tree.n, row_indices, neighborhood)
-        ############## feel like this line was meant to delete the first column since that is the node itself? ##########
         self.neighborhood = jnp.delete(neighborhood,0,1)
-
 
         # Compute the reference_position_state.  Using the terminology of Silling et al. 2007
         self.reference_position_state = self.pd_nodes[self.neighborhood] - self.pd_nodes[:,None]
-        #print("self.ref_pos_st: ",self.reference_position_state)
-
-        # Compute the partial volumes
-        vol_state, rev_vol_state = self.compute_partial_volumes(width, thickness)
 
         # Cleanup reference_magnitude_state
         self.reference_magnitude_state = jnp.where(self.reference_magnitude_state == np.inf, 0.0, self.reference_magnitude_state)
+        #jax.debug.print("self.ref_mag_state.shape at end of setup disc {r}",r=self.reference_magnitude_state.shape)
 
-        # A Numpy masked array containing the *influence vector-state* as defined in Silling et al. 2007
-        # ratio = self.reference_magnitude_state / self.horizon
-        # self.influence_state = jnp.ones_like(self.volume_state) - 35.0 * ratio ** 4.0 + 84.0 * ratio ** 5.0 - 70 * ratio ** 6.0 + 20 * ratio ** 7.0
-        self.influence_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
-        #print("self.influence_state in setup disc: ", self.influence_state)
-
-        #:The node indices of the boundary region at the left end of the bar
-        li = 0
-        self.left_bc_mask = self.neighborhood[li] != li
-        disp = self.neighborhood[li][self.left_bc_mask]
-
-
-        ri = self.num_nodes - 1
-        self.right_bc_mask = self.neighborhood[ri] != ri
-        self.right_bc_region = self.neighborhood[ri][self.right_bc_mask]
-
-        #the left and right boundary regions are the nodes that are within the horizon distance
-        #self.prescribed_velocity = prescribed_velocity
-        #print("self.prescribed_velocity: ", self.prescribed_velocity)
-
-        pd_node0 = float(self.pd_nodes[0])
-        pd_nodeN = float(self.pd_nodes[-1])
-
-        if prescribed_velocity is not None:
-            self.left_bc_region = np.array(self.tree.query_ball_point([pd_node0], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0))
-            self.right_bc_region = np.array(self.tree.query_ball_point([pd_nodeN], r=(self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0))
-        
-
-
-        self.no_damage_region_left = np.array(self.tree.query_ball_point([pd_node0], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0))
-        self.no_damage_region_right = np.array(self.tree.query_ball_point([pd_nodeN], r=(2.0*self.horizon + np.max(self.lengths) / 2.0), p=2, eps=0.0))
 
         return
 
-
-    def intermed_setup_disc(self, width, thickness):
-        #jax.debug.print("thickness in intermed set disc: {}",thickness)
-        # implementing a lower bound for thickness
-        thickness = jnp.clip(thickness, 1e-3, None)  # Prevent zero/negative thickness
-        #problem1.thickness = thickness  # Update the thickness in the problem object
-
-        # Compute the partial volumes
-        vol_state,rev_vol_state=self.compute_partial_volumes(width, thickness)
-
-        # Compute inf state from those volumes
-        inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
-
-        return(vol_state, rev_vol_state, inf_state)
-
     
-    def compute_partial_volumes(self, width, thickness:np.ndarray):
+    def compute_partial_volumes(self, thickness:jax.Array):
 
         # Setup some local (to function) convenience variables
         neigh = self.neighborhood
@@ -270,101 +227,76 @@ class PDJAX():
         ref_mag_state = self.reference_magnitude_state
         horiz = self.horizon
 
-        # implementing a lower bound for thickness
-        # thickness = jnp.clip(thickness, 1e-3, None)  # Prevent zero/negative thickness
-        #problem1.thickness = thickness  # Update the thickness in the problem object  
+        #jax.debug.print("neigh: {v}", v=neigh.shape)
 
-        #jax.debug.print("t in comp part vol: {}",thickness)
-
-        #print("neigh = ",neigh)
-        #print("shapes:",neigh.shape,ref_mag_state.shape,vol_state.shape)
-
+        # jax.debug.print("thickness in comp par v: {t}",t=thickness)
         # Initialize the volume_state to the lengths * width * thickness
-        #width = 1.0
-        #self.width = width
-        #self.thickness = thickness
+        width = 1.0
+        self.width = width
         vol_state_uncorrected = lens[neigh] * thickness[neigh] * width 
-        horizArray = jnp.ones(ref_mag_state.shape) * horiz 
 
-        #may have to change this back to horiz from horiz array
-        #print("horiz array shape ",horizArray.shape)
-        #print("ref-horizAr shapes: ", ref_mag_state.shape,neigh.shape,vol_state_uncorrected.shape)    
-        #should be all good here for broadcasting dim
+        #jax.debug.print("vol_state_unc in com p v: {v}", v=vol_state_uncorrected.shape)
+        #jax.debug.print("ref_mag_state : {l}", l=ref_mag_state.shape)
 
-        #print("lens[neigh]: ",lens[neigh])
-        vol_state = jnp.where(ref_mag_state < horizArray + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
+        #Zero out entries that are not in the family
+        vol_state_uncorrected = jnp.where(ref_mag_state < 1.0e-16, 0.0, vol_state_uncorrected) 
+        
+        # print(vol_state_uncorrected)
+
+
+        #jax.debug.print("thickness: {t}", t=thickness)
+        #jax.debug.print("neigh: {n}", n=neigh)
+        #jax.debug.print("ref_mag_state: {r}", r=ref_mag_state)
+        #jax.debug.print("vol_state_uncorrected: {v}", v=vol_state_uncorrected)
+        #jax.debug.print("vol_state: {v}", v=vol_state)
+
+        vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
+        #print("vol_state:", vol_state)
 
         # Check to see if the neighboring node has a partial volume
-        is_partial_volume = jnp.abs(horizArray - ref_mag_state) < lens[neigh] / 2.0
-
-        #print("is_partial_volume= ",is_partial_volume)
-        #print("shape is_partial= ",is_partial_volume.shape)
+        is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
 
         # Two different scenarios:
-        is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horizArray)
-        is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horizArray)
+        is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
+        is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
 
-        neighT=np.transpose(neigh) 
-
-        #print("shapes:",neighT.shape)
-        
-        #making horiz into an array, was previously a scalar
 
         # Compute the partial volumes conditionally
-        vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horizArray)) * width * thickness[neigh], vol_state)
-
-        vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horizArray - ref_mag_state)) * width * thickness[neigh], vol_state)
-
-        #print("(ref-horiz)*w*t= ",(lens[neigh] / 2.0 - (ref_mag_state - horizArray))*width*thickness[neigh])
-        #print("shape ref-horiz= ",(lens[neigh] / 2.0 - (ref_mag_state - horizArray)).shape)
-
-        #print("vol_state_uncorrected: ",vol_state_uncorrected)
-
+        vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[neigh], vol_state)
+        vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness[neigh], vol_state)
 
         # If the partial volume is predicted to be larger than the unocrrected volume, set it back
         # vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
         vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
 
-        #print("ref-horizAr: ", ref_mag_state-horizArray) 
-
         # Now compute the "reverse volume state", this is the partial volume of the "source" node, i.e. node i,
         # as seen from node j.  This doesn't show up anywhere in any papers, it's just used here for computational
         # convenience
         vol_array = lens[:,None] * width * thickness[:, None]
-
-        #print("vol_array: ",vol_array)
-        #print("vol_array.shape: ",vol_array.shape)
-
         rev_vol_state = jnp.ones_like(vol_state) * vol_array
-        rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horizArray)) * width * thickness[:, None], rev_vol_state)
-        rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horizArray - ref_mag_state)) * width * thickness[:, None], rev_vol_state)
-        #print("rev_vol_state= ",rev_vol_state)
+        rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * width * thickness[:, None], rev_vol_state)
+        rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * width * thickness[:, None], rev_vol_state)
         #If the partial volume is predicted to be larger than the uncorrected volume, set it back
         rev_vol_state = jnp.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
-        #print("vol_state in comput  part vo= ",vol_state)
-
-
 
         # Set attributes
-        #self.volume_state = vol_state
-        #self.reverse_volume_state = rev_vol_state
+        # self.volume_state = vol_state
+        # self.reverse_volume_state = rev_vol_state
 
         return (vol_state, rev_vol_state)
 
     def introduce_flaw(self, location:float, allow_damage=False):  
+
         if allow_damage:
             self.allow_damage()
 
-        #converting ot a numpy array of integers for use in scipy.spatial.cKDTree.query
-        max_neighbors = int(jax.device_get(self.max_neighbors))
-
-        _, nodes_near_flaw = self.tree.query(location, k=max_neighbors, p=2, eps=0.0, 
+        _, nodes_near_flaw = self.tree.query(location, k=self.max_neighbors, p=2, eps=0.0, 
                                              distance_upper_bound=(self.horizon + np.max(self.lengths)/2))
 
         # The search above will produce duplicate neighbor nodes, make them into a
         # unique 1-dimensional list
         nodes_near_flaw = np.array(np.unique(nodes_near_flaw), dtype=np.int64)
-        #print("nodes_near_flaw: ",nodes_near_flaw)
+    
         # Remove the dummy entries
         nodes_near_flaw = nodes_near_flaw[nodes_near_flaw != self.tree.n]
 
@@ -382,135 +314,102 @@ class PDJAX():
                 if min_node < location and location < max_node:
                     self.influence_state = self.influence_state.at[idx, bond_idx].set(0.2)
         return
-    
-
 
     # Compute the force vector-state using a LPS peridynamic formulation
     def compute_force_state_LPS(self, 
                                 disp:jax.Array, 
-                                inf_state:jax.Array,
-                                vol_state, 
-                                rev_vol_state) -> Tuple[jax.Array, jax.Array]:
+                                vol_state:jax.Array,
+                                inf_state:jax.Array) -> Tuple[jax.Array, jax.Array]:
          
-        #print("inf_state.shape: ",inf_state.shape)
-        #print("inf_state: ",inf_state)
+
         #Define some local convenience variables     
         ref_pos = self.pd_nodes 
         ref_pos_state = self.reference_position_state
         ref_mag_state = self.reference_magnitude_state
-        #vol_state = self.volume_state
         neigh = self.neighborhood
         K = self.bulk_modulus
-        #inf_state = self.influence_state
-        #changed inf_state def above here because was being created as a single row vecor, now it is a 2D array with shape (num_nodes, num_neighbors)
 
         #Compute the deformed positions of the nodes
         def_pos = ref_pos + disp
-        #print("def_pos: ",def_pos)
-        #print("def_pos.shape :",def_pos.shape)
 
         #Compute deformation state
         def_state = def_pos[neigh] - def_pos[:,None]
-        #print("def_state: ",def_state)
-        #print("def_state.shape :",def_state.shape)
 
         # Compute deformation magnitude state
         def_mag_state = jnp.sqrt(def_state * def_state)
-        #print("def_mag_state: ",def_mag_state)
-        #print("def_mag_state.shape :",def_mag_state.shape)
 
         # Compute deformation unit state
         def_unit_state = jnp.where(def_mag_state > 1.0e-16, def_state / def_mag_state, 0.0)
-   
+
         # Compute scalar extension state
         exten_state = def_mag_state - ref_mag_state
-        #print("exten_state: ",exten_state.shape)    
-        #jax.debug.print("exten/def_mag: ", exten_state/ref_mag_state)
-
 
         stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
-        
+        # jax.debug.print('stretch: {s}', s=stretch.at[:].get())
+
         # Apply a critical strech fracture criteria
-        print("damage= ",self._allow_damage)
-        #jax.debug.print("stretch:  {}",stretch)
-
-        def apply_damage(inf_state):
-            # Apply damage where stretch exceeds critical_stretch
-            inf_state = jnp.where(stretch > self.critical_stretch, 0.0, inf_state)
-            # Disallow damage on the boundary regions
-            undamaged_influence_state_left = self.influence_state.at[self.no_damage_region_left, :].get()
-            inf_state = inf_state.at[self.no_damage_region_left, :].set(undamaged_influence_state_left)
-            undamaged_influence_state_right = self.influence_state.at[self.no_damage_region_right, :].get()
-            inf_state = inf_state.at[self.no_damage_region_right, :].set(undamaged_influence_state_right)
-            return inf_state
-
-        inf_state = jax.lax.cond(self._allow_damage, apply_damage,lambda x: x,inf_state)
-
-        #replaced below if statement with a funtion call that uses jax.lax to avoid nonconcrete boolean errors
-        '''
-        if self._allow_damage == True:
-            #print("stretch shape: ",stretch.shape)
-            #print("inf_state: ",inf_state)
-            #print("inf_state.shape: ",inf_state.shape)
-
-            ############### this is where the broadcasting error occurs ##################
-            inf_state = jnp.where(stretch  > self.critical_stretch, 0.0, inf_state)
-            #print("inf_state: ",inf_state)
-            #print("inf_state.shape: ",inf_state.shape)
+        if self._allow_damage :
             
-
+            inf_state = jnp.where(stretch  > self.critical_stretch, 0.0, inf_state)
             # Disallow damage on the boundary regions
-            undamaged_influence_state_left = self.influence_state.at[self.no_damage_region_left, :].get()
-            inf_state = inf_state.at[self.no_damage_region_left, :].set(undamaged_influence_state_left)
-            undamaged_influence_state_right = self.influence_state.at[self.no_damage_region_right, :].get()
-            inf_state = inf_state.at[self.no_damage_region_right, :].set(undamaged_influence_state_right)
-            #jax.debug.print('IS: {infl}', infl=inf_state.at[:].get())
-            #print("volState.shape :",vol_state.shape)
-        '''
+
+            inf_state = inf_state.at[self.no_damage_region_left, :].set(self.undamaged_influence_state_left)
+            inf_state = inf_state.at[self.no_damage_region_right, :].set(self.undamaged_influence_state_right)
+            # jax.debug.print('IS: {infl}', infl=inf_state.at[:].get())
 
         # Compute the shape tensor (really a scalar because this is 1d), i.e. the "weighted volume" as 
         # defined in Silling et al. 2007
-        #shape_tens = (inf_state * ref_pos_state * ref_pos_state * vol_state)
-        #shape_tens = (inf_state * ref_pos_state * vol_state).sum(axis=1)
-        #print("shape_tens= ",shape_tens)
-        shape_tens = jax.device_get((inf_state * ref_pos_state * ref_pos_state * vol_state).sum(axis=1))
-        
-        #print("exten_state.shape: ",exten_state.shape)
-        #print("k/shape_tens: ",9.0* K / shape_tens[:, None])
-
+        # added epsilon to prevent dividing by zero
+        epsilon = 1e-12 
+        shape_tens = (inf_state * ref_pos_state * ref_pos_state * vol_state).sum(axis=1)
+        shape_tens = jnp.where(jnp.abs(shape_tens) < epsilon, epsilon, shape_tens)
 
         # Compute scalar force state for a elastic constitutive model
         scalar_force_state = 9.0 * K / shape_tens[:, None] * exten_state
-        #print("scalar_force_s.shape: ",scalar_force_state.shape)
-        #print(inf_state.shape,scalar_force_state.shape,def_unit_state.shape)
-
+       
         # Compute the force state
         force_state = inf_state * scalar_force_state * def_unit_state
 
-        #print("ForceSt.shape,inf_state.shape: ",force_state.shape,inf_state.shape)
+        # jax.debug.print('force_state: {f}', f=force_state.at[:].get())
 
         return force_state, inf_state
 
-    def compute_damage(self,inf_state):
+    def compute_damage(self):
+        return self._compute_damage(self.influence_state)
 
-        #var_influence_state = self.influence_state.sum(axis=1)
-        #jax.debug.print("inf_state in comp dam: {}", inf_state)
-        var_inf_state = inf_state.sum(axis=1)
-        #var=self.influence_state.sum(axis=1)
-        #jax.debug.print("var_inf_state: {}",var_inf_state)
-        #jax.debug.print("self.num_neighbors: {}",self.num_neighbors)      
+    def _compute_damage(self,inf_state:jax.Array, vol_state:jax.Array, undamaged_inf_state:jax.Array):
+        #jax.debug.print("inf_state in dam: {i}",i=inf_state)
+        #jax.debug.print("inf_state.sum in dam: {i}",i=inf_state.sum(axis=1))   
+        epsilon = 1e-12
+        denom = (undamaged_inf_state * vol_state).sum(axis=1)
+        denom = jnp.where(jnp.abs(denom) < epsilon, epsilon, denom)
 
-        #print("mean_damage: ",jax.debug.print("mean_damage: {}", mean_damage))
-        #print("var.shape: ",var.shape)
-        #print("num_neighbors: ",self.num_neighbors)
-        #print("num_neigh shape ",self.num_neighbors.shape)
-        int_damage = jnp.divide(var_inf_state,self.num_neighbors)
-        #jax.debug.print("int_damage: {}",int_damage)
+        
+        intDam = (inf_state * vol_state).sum(axis=1) / (undamaged_inf_state * vol_state).sum(axis=1)
+        #intDam = (inf_state * vol_state).sum(axis=1) / (self.undamaged_influence_state * vol_state).sum(axis=1)
+        # jax.debug.print(" dam / undam state sums: {i}",i=intDam)
+        #jax.debug.print(" new dam shape: {i}",i=intDam.shape)
 
-        damage = 1 - var_inf_state / self.num_neighbors
-        #print("damage in comp dam:",damage)
+        #jax.debug.print(" new dam : {i}",i=intDam)
 
-        return damage
+        #jax.debug.print("self.undamaged_infl_st: {s}",s=self.undamaged_influence_state)
+        #jax.debug.print("vol_state: {v}",v=vol_state)
+        #jax.debug.print("inf_state in dam: {i}",i=inf_state)
+
+        intDamOG =inf_state.sum(axis=1) / self.num_neighbors
+        #jax.debug.print(" OG dam: {i}",i=intDamOG)
+        #jax.debug.print(" OG dam shape: {i}",i=intDamOG.shape)
+
+        
+
+        #return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
+
+        #return 1 - (inf_state * vol_state).sum(axis=1) / denom
+        return 1 - intDamOG
+
+
+
+
 
 
     def smooth_ramp(self, t, t0, c=1.0, beta=5.0):
@@ -540,371 +439,213 @@ class PDJAX():
    
     # Internal force calculation
     @partial(jit, static_argnums=(0,))
-    def compute_internal_force(self, disp, inf_state, time, vol_state, rev_vol_state, thickness, width):
+    def compute_internal_force(self, disp, vol_state, rev_vol_state, inf_state, thickness, time):
             
         # Define some local convenience variables     
-        #vol_state = self.volume_state
-        #rev_vol_state = self.reverse_volume_state
         neigh = self.neighborhood
-        #print("inf_state.shape: ",inf_state.shape)
-        #print("inf_state: ",inf_state)
-
-        # implementing a lower bound for thickness
-        thickness = jnp.clip(thickness, 1e-3, None)  # Prevent zero/negative thickness
-        #problem1.thickness = thickness  # Update the thickness in the problem object
-
-        #jax.debug.print("t begin comp int for: {}",thickness)
         
         # Compute the force vector-state according to the choice of constitutive
-        # model  
-        #jax.debug.print("BEFORE COMPUTE FORCE STATE F {}", inf_state)
-        force_state, inf_state = self.compute_force_state_LPS(disp, inf_state, vol_state, rev_vol_state)
+        # model 
+        # jax.debug.print("inf_state before c_f_st: {i}",i=inf_state) 
+        force_state, inf_state = self.compute_force_state_LPS(disp, vol_state, inf_state)
+        # jax.debug.print("inf_state after c_f_st: {i}",i=inf_state) 
 
-
-        #print("force_st,inf_state= ",force_state,inf_state)
 
         #Integrate nodal forces 
         force = (force_state * vol_state).sum(axis=1)
-
         force = force.at[neigh].add(-force_state * rev_vol_state)
-        
-        #indices_l_bc_mask = np.array(jnp.where(self.left_bc_mask)[0])
 
         if self.prescribed_traction is not None:
             li = 0
+            ramp_traction = self.smooth_ramp(time, t0=1.e-5, c=self.prescribed_traction) 
 
-            # Compute the left and right boundary conditions
-            # Changed syntax to alleviate broadcasting error
-            # Also were indexing using the jax array indicies which caused an error so assigend more local variables
-            ramp_traction = self.smooth_ramp(time, t0=1.e-5, c=self.prescribed_traction)  
-
-            denom = vol_state[li].sum() + rev_vol_state[li][0]
-            denom = jnp.where(denom < 1e-12, 1e-12, denom)
-            left_bc_force_density = ramp_traction * (self.width * thickness[li]) / denom
-
-            #left_bc_force_density = ramp_traction * (width * thickness[li]) / (vol_state[li].sum() + rev_vol_state[li][0])
-
-            mask = self.left_bc_mask
-            #print("mask.shape: ",mask.shape)
-            left_bc_nodal_forces = left_bc_force_density * vol_state[li] * mask
-            force = force.at[li].add(-left_bc_nodal_forces.sum())
-
-
-
-
-            ## think the below line here is causing the broadcasting error, need to check shape of region
+            #trying to calculate force/unit area instead of normalized by volume
+            #left_bc_force_density = ramp_traction * (self.width * thickness[li]) / (vol_state[li].sum() + rev_vol_state[li][0])
+            #left_bc_nodal_forces = left_bc_force_density * vol_state[li][self.left_bc_mask]
             #force = force.at[self.left_bc_region].add(-left_bc_nodal_forces)
+            #force = force.at[li].add(-left_bc_force_density * rev_vol_state[li][li])
 
-            #print("left_BC_region: ", self.left_bc_region)
-
-            # left_bc_nodal_forces is full length, so index it
-            #forces_to_add = left_bc_nodal_forces[self.left_bc_region]
-            # Add only to the specified indices
-            #force = force.at[self.left_bc_region].add(-forces_to_add)
-            #print("force after left bc region: ", jax.device_get(force.shape))
-
-            #force = force.at[li].add(-left_bc_force_density * self.reverse_volume_state[li][li])
-            #force = force - left_bc_nodal_forces * self.left_bc_mask
-            #print("force after left  with density: ", jax.device_get(force.shape))
-            
-
-            li = 0
-            neighbor_indices = self.neighborhood[li]  # shape (num_neighbors,)
-            mask = self.left_bc_mask                  # shape (num_neighbors,)
-            left_bc_nodal_forces = left_bc_force_density * vol_state[li] * mask  # shape (num_neighbors,)
-
-            # Only update the neighbors where mask is True
-            force = force.at[neighbor_indices].add(-left_bc_nodal_forces)
-
-
+            #left_bc_area = self.width * thickness[self.left_bc_region]
+            #left_bc_nodal_forces = ramp_traction * left_bc_area
+            left_bc_nodal_forces = (ramp_traction * self.width * self.width)/(vol_state[li].sum() + rev_vol_state[li][0])
+            force = force.at[self.left_bc_region].add(-left_bc_nodal_forces)
+            # For the leftmost node (if needed)
+            #left_bc_area_li = self.width * thickness[li]
+            #force = force.at[li].add(-ramp_traction * left_bc_area_li)
+            #
             ri = self.num_nodes - 1
-            #implementing check to be sure denom isn't zero 
-            denom = vol_state[li].sum() + rev_vol_state[li][0]
-            denom = jnp.where(denom < 1e-12, 1e-12, denom)
-            right_bc_force_density = ramp_traction * (self.width * thickness[li]) / denom
+            #right_bc_force_density = ramp_traction * (self.width) / (vol_state[ri].sum() + rev_vol_state[ri][0])
+            #right_bc_force_density = ramp_traction * (self.width * thickness[ri]) / (vol_state[ri].sum() + rev_vol_state[ri][0])
+            #right_bc_nodal_forces = right_bc_force_density * vol_state[ri][self.right_bc_mask]
+            #force = force.at[self.right_bc_region].add(right_bc_nodal_forces)
+            #force = force.at[ri].add(right_bc_force_density * rev_vol_state[ri][0])
 
-            #right_bc_force_density = ramp_traction * (width * thickness[ri]) / (vol_state[ri].sum() + rev_vol_state[ri][0])
+            #trying to calculate force/unit area instead of normalized by volume
+            #right_bc_area = self.width * thickness[self.right_bc_region]
+            #right_bc_nodal_forces = ramp_traction * right_bc_area
+            right_bc_nodal_forces = (ramp_traction * self.width * self.width)/(vol_state[li].sum() + rev_vol_state[li][0])
+            force = force.at[self.right_bc_region].add(right_bc_nodal_forces)
+            # For the rightmost node (if needed)
+            #right_bc_area_ri = self.width * thickness[ri]
+            #force = force.at[ri].add(ramp_traction * right_bc_area_ri)
+
+            #jax.debug.print("force at left bc region: {f}", f=force.at[self.left_bc_region].get())
+            #jax.debug.print("force at right bc region: {f}", f=force.at[self.right_bc_region].get())
             
-            #right_bc_mask = jax.device_get(self.right_bc_mask)
-            #right_bc_indices = np.where(right_bc_mask)[0]
-            
-            mask = self.right_bc_mask
-            right_bc_nodal_forces = right_bc_force_density * vol_state[li] * mask
-            force = force.at[ri].add(-right_bc_nodal_forces.sum())
 
-
-            #print("force: ", force)
         return force, inf_state
 
 
-    #def solve_one_step(self, vals:Tuple[jax.Array, jax.Array, jax.Array, jax.Array, float]):
-    def solve_one_step(self, vals):
-        disp, vel, acc, inf_state, time, vol_state, rev_vol_state, thickness, time_step, width = vals
-        print("ENTERING solve_one_step")
+    def solve_one_step(self, vals:Tuple[jax.Array, jax.Array, jax.Array, 
+                                        jax.Array, jax.Array, jax.Array, 
+                                        jax.Array, jax.Array, jax.Array, float]):
 
-        # implementing a lower bound for thickness
-        thickness = jnp.clip(thickness, 1e-3, None)  # Prevent zero/negative thickness
-        #thickness = thickness  # Update the thickness in the problem object
-
-        #print("t inside sol 1 st: ", thickness)
-        #jax.debug.print("thickness inside sol 1 st: {}", thickness)
-        #t_int = jax.device_get(thickness)
-        #print("t_int in sol 1 step: ",t_int)
-        
-        #(disp, vel, acc, inf_state, time) = vals
-
-        #jax.debug.print("thickness inside sol 1 st: {}", thickness)
+        (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, time) = vals
 
         # TODO: Solve for stable time step
-        #are we set on this tiem step?  Probs no need to increase this right no
-        #time_step = 1.0e-9
-        #print("self.left_bc_region: ", self.left_bc_region)
+        time_step = 1.0e-6
 
-        
-        #li = 0
-        #moving to the setup_discretization function
+
         if self.prescribed_velocity is not None:
-                bc_value = self.prescribed_velocity * time
-                # Apply displacements bcs
-                f = lambda x: 2.0 * bc_value / self.bar_length * x
-                disp = disp.at[self.left_bc_region].set(f(self.pd_nodes[self.left_bc_region]))
-                disp = disp.at[self.right_bc_region].set(f(self.pd_nodes[self.right_bc_region]))
+            bc_value = self.prescribed_velocity * time
+            # Apply displacements bcs
+            f = lambda x: 2.0 * bc_value / self.bar_length * x
+            disp = disp.at[self.left_bc_region].set(f(self.pd_nodes[self.left_bc_region]))
+            disp = disp.at[self.right_bc_region].set(f(self.pd_nodes[self.right_bc_region]))
 
-        
-        ###### think need to add something along the lines of the if statement above for self.prescribed_traction 
-        ###### wasn't printing the below statements
-        
-        jax.debug.print("thickness in sol 1, before comp int f: {}", thickness)
-
-        force, inf_state = self.compute_internal_force(disp, inf_state, time, vol_state, rev_vol_state, thickness, width)
-        #print("inf_state in solve 1 step: ", inf_state)
-        #jax.debug.print('thickness in 1 step after comp int for: {}', thickness)
-
+        force, inf_state = self.compute_internal_force(disp, vol_state, rev_vol_state, inf_state, thickness, time)
 
         acc_new = force / self.rho
         vel = vel.at[:].add(0.5 * (acc + acc_new) * time_step)
         disp = disp.at[:].add(vel * time_step + (0.5 * acc_new * time_step * time_step))
         acc = acc.at[:].set(acc_new)
 
-        #print("disp.shape: ",disp.shape)
-
-        return (disp, vel, acc, inf_state, time + time_step, vol_state, rev_vol_state, thickness, time_step, width)
+        return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness,undamaged_inf_state, time + time_step)
 
 
-    def solve(self, 
-              prescribed_velocity:Union[float, None], 
-              prescribed_traction:Union[float, None], 
-              vol_state,
-              rev_vol_state,
-              thickness,
-              width,
-              inf_state,
+    def _solve(self, 
+              thickness:Union[jax.Array, None]=None,
               max_time:float=1.0):
-
         '''
-            changed how prescribed velocity and prescribed traction are set
             Solves in time using Verlet-Velocity
         '''
-        #defining time before variable is referenced
-        time = 0.0
-        time_step = 1E-9
+        #jax.debug.print("max_time: {t}",t=max_time)
+        time_step = 1.0e-6
+        num_steps = int(max_time / time_step)
 
-        # implementing a lower bound for thickness
-        thickness = jnp.clip(thickness, 1e-3, None)  # Prevent zero/negative thickness
-        #problem1.thickness = thickness  # Update the thickness in the problem object
+        if thickness is None:
+            thickness = self.thickness
 
-        if prescribed_velocity is not None and prescribed_traction is not None:
-            raise ValueError("Only one of prescribed_velocity or prescribed_traction should be set, not both.")
-        
-        if prescribed_velocity is None and prescribed_traction is None:
-            raise ValueError("Either prescribed_velocity or prescribed_traction must be set.")
+        vol_state, rev_vol_state = self.compute_partial_volumes(thickness)
 
-        jax.debug.print("thickness begin solve: {}",thickness)
 
-        #self.prescribed_velocity = prescribed_velocity
-        #self.prescribed_traction = prescribed_traction
+        #jax.debug.print("vol_state aft comp p v: {vs}",vs=vol_state)
+        #jax.debug.print("rev_vol_s update: {rv}",rv=rev_vol_state)
 
-        #initializing the fields locally
+        inf_state = self.influence_state.copy() 
+        undamaged_inf_state = self.undamaged_influence_state.copy()
+        # Initialize a fresh influence state for this run
+        #inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
+
+        #jax.debug.print("inf_state update after where: {i}",i=inf_state)
+        # The fields
         disp = jnp.zeros_like(self.pd_nodes)
         vel = jnp.zeros_like(self.pd_nodes)
         acc = jnp.zeros_like(self.pd_nodes)
-        #inf_state = self.influence_state
-        #print("inf_state in solve: ",inf_state)
+        time = 0.0
+
+        #Solve
+        vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, time)
 
 
-        force = jnp.zeros_like(self.pd_nodes)
+        #### added this section in place of while loop
+        ##### when implemented new more detailed damage funct it did not like while loop
+        def scan_step(vals, _):
+            return self.solve_one_step(vals), None
 
-        #:The node indices of the boundary region at the left end of the bar
-        li = 0
-
-
-        if prescribed_traction is not None:
-            ramp_traction = self.smooth_ramp(time, t0=1.e-5, c=prescribed_traction)  
-
-            denom = vol_state[li].sum() + rev_vol_state[li][0]
-            denom = jnp.where(denom < 1e-12, 1e-12, denom)
-            left_bc_force_density = ramp_traction * (self.width * thickness[li]) / denom
-
-            #left_bc_force_density = ramp_traction * (self.width * thickness[li]) / (vol_state[li].sum() + rev_vol_state[li][0])
-
-            #print("self.left_bc_mask: ", self.left_bc_mask)
-
-            mask = self.left_bc_mask
-            left_bc_nodal_forces = left_bc_force_density * vol_state[li] * mask
-            force = force.at[li].add(-left_bc_nodal_forces.sum())
-
-        #:The node indices of the boundary region at the right end of the bar
-        ri = self.num_nodes - 1
+        vals, _ = jax.lax.scan(scan_step, vals, None, length=num_steps)
 
 
-        vals = (disp, vel, acc, inf_state, time, vol_state, rev_vol_state, thickness, time_step, width)
-        #can't use while loop with dynamic bounds, max_time is set, bute vals[4] (time) changes in loop
-        #vals = jax.lax.while_loop(lambda vals: vals[4] < max_time, self.solve_one_step, vals)
+        #vals = jax.lax.while_loop(lambda vals: vals[8] < max_time, self.solve_one_step, vals)
+        #self.volume_state = vals[3]
 
-        
-        #added the following lines to calculate the vals within solve_one_step in place of while loop above
-        num_steps = int(max_time / time_step)
+        return vals
 
-        def scan_body(carry, _):
-            return self.solve_one_step(carry), None
-        
-        #jax.debug.print("inf_state in solve bef {}", inf_state)
 
-        init_vals = (disp, vel, acc, inf_state, time, vol_state, rev_vol_state, thickness, time_step, width)
-        final_vals, _ = jax.lax.scan(scan_body, init_vals, None, length=num_steps)
+    def solve(self, max_time:float=1.0):
+        '''
+            Solves in time using Verlet-Velocity
+        '''
 
-        jax.debug.print("thickness in solve aft {}", thickness)
+        vals = self._solve(max_time=max_time)
 
-    
+        self.displacement = vals[0]
+        self.velocity = vals[1]
+        self.acceleration = vals[2]
+        self.influence_state = vals[5]
 
-        return final_vals
+        return 
 
-    def get_solution(self,disp):
+
+    def get_solution(self):
         ''' Convenience function for retrieving displacement'''
-        return disp
+        return self.displacement
 
     def get_nodes(self):
         ''' Convenience function for retrieving peridynamic node locations'''
         return self.pd_nodes
-
-
-def loss(thickness,problem1):
-    '''
-        Loss function for the optimization problem, which is to minimize the damage and thickness
-        of the bar.
-    '''
-    problem1.allow_damage()
-
-    # implementing a lower bound for thickness
-    thickness = jnp.clip(thickness, 1e-4, None)  # Prevent zero/negative thickness
-    #thickness = jnp.where(jnp.isnan(thickness), 1e-4, thickness)
-
-    problem1.thickness = thickness  # Update the thickness in the problem object
-
-    #print("problem1.thick begin loss: ", problem1.thickness)
-    jax.debug.print("p1.thick begin loss: {}",problem1.thickness)
-    jax.debug.print("thick begin loss: {}",thickness)
-
-
-    #disp, vel, acc, inf_state = problem.reset_state(thickness)
-    #disp = jnp.zeros(problem1.num_nodes)
-    #vel = jnp.zeros(problem1.num_nodes)
-    #acc = jnp.zeros(problem1.num_nodes)
-    inf_state = problem1.influence_state
-    width = 1
-
-    # Update the model with the candidate thickness
-    vol_state, rev_vol_state, inf_state = problem1.intermed_setup_disc(width, thickness)
-
-    #problem1.setup_discretization(thickness, width)
-    #vol_state, rev_vol_state = problem1.compute_partial_volumes(width, thickness)
-
-
-    if problem1.prescribed_velocity is not None:
-        prescribed_velocity = problem1.prescribed_velocity
-        print("problem1.prescribed_velocity: ", problem1.prescribed_velocity)
-
-    else:
-        prescribed_velocity = None
     
-    if problem1.prescribed_traction is not None:
-        prescribed_traction = problem1.prescribed_traction
-        print("problem1.prescribed_traction: ", problem1.prescribed_traction)
-
-    else:
-        prescribed_traction = None
-
-    # Update the model with the candidate thickness
-    #problem1.setup_discretization(thickness)
-
-    #now run the problem with the locally defined fields and solve
-    #problem1.reset(displacement, velocity, acceleration, influence_state, thickness)
-    #problem1.setup_discretization(thickness) 
-
-    disp, vel, acc, inf_state, time, vol_state, rev_vol_state, thickness, time_step, width = problem1.solve(prescribed_velocity=problem1.prescribed_velocity,prescribed_traction=problem1.prescribed_traction,vol_state=vol_state, rev_vol_state=rev_vol_state, thickness=thickness, width=width, inf_state=inf_state, max_time=1E-03)
-    #ax.plot(problem1.get_nodes(), problem1.get_solution(disp), 'k.')
-    #plt.show()
-
-    jax.debug.print("thickness after solve in loss : {}", thickness)
-
-    # feel like I need to update influence state here withn the problem here but not sure how to?
-    #problem1.influence_state = inf_state
-
-    #jax.debug.print("inf state loss fn: {}", inf_state)
-    #jax.debug.print("vol state loss fn: {}", vol_state)
-
-    damage = problem1.compute_damage(inf_state)
-    #jax.debug.print("damage: {}", damage)
-
-
-
-    mean_damage = damage.sum() / problem1.num_nodes
-    max_damage =  damage.max()
-    #jax.debug.print("mean_damage: {}", mean_damage)
-    mean_thickness = thickness.sum() / problem1.num_nodes
-    max_thickness = thickness.max()
-
-    #says if loss is nan set to massive value
-    #max_thickness = jnp.where(jnp.isnan(max_thickness), 1e10, max_thickness)
- 
-    thick_loss = mean_thickness / max_thickness
-
-    #jax.debug.print("problem1.num_nodes: {}", problem1.num_nodes)
-    #jax.debug.print("max_thickness: {}", max_thickness)
-
-    #jax.debug.print("thick_loss: {}", thick_loss)
-    #jax.debug.print("mean_damage: {}", mean_damage)
-    #jax.debug.print("max_damage: {}", max_damage)
-
-    loss_penalty = jnp.where(jnp.any(thickness < 0.01), 1E10, 0.0)
+#def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
+def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-3):
     
-    loss = 0.5 * mean_damage + 0.5 * mean_thickness / max_thickness + loss_penalty
-    #loss = 0.5 * max_damage + 0.5 * mean_thickness / max_thickness
-    #loss = max_damage 
+    ###################################################
+    #thickness = softplus(thickness)
+    #vals = problem._solve(thickness, max_time=max_time)
+    #jax.debug.print("inf_state in loss: {v}",v=vals[5])
+    #jax.debug.print("vol_state: {v}",v=vals[3])
+    #damage = problem._compute_damage(vals[5],vals[3],vals[7])
 
-    # had tried to implement a bound to the loss function to solve nan issue
-    '''
-    def loss(thickness, problem1):
-        if jnp.any(thickness < 0.01):
-            return 1e10  # Large penalty for violating lower bound
+   # mean_damage = damage.sum() / problem.num_nodes
+    #max_damage = damage.max() 
+    #mean_thickness = thickness.sum() / problem.num_nodes
+    #max_thickness = thickness.max()
+    #max_all_thick = 10.0
+
+    #loss_value = max_damage
+
+    #loss_value =  0.1 * max_damage + 0.9 * max_thickness / max_all_thick 
+
+    # loss_value =  0.4 * max_damage + 0.6  * mean_thickness / max_thickness
+
+    #loss_value = 0.9 * max_damage + 0.1 * max_thickness
+
+    #loss_value = max_damage / max_thickness + max_damage
+    #loss_value = 0.1 * max_damage + 0.9 * ((max_thickness / max_all_thick) ** 2)
+    #####################################################################
     
 
-    jax.debug.print("loss: {}", loss)
-    '''
-
-    # implementing a lower bound for thickness
-    #thickness = jnp.clip(thickness, 1e-3, None)  # Prevent zero/negative thickness
-    #problem1.thickness = thickness  # Update the thickness in the problem object
-    #print("Updated thickness in problem1: ", problem1.thickness)
+    ######## to optimize a singel scalar value for thickness
+    #thickness = thickness[0] * jnp.ones(problem.number_of_elements)
+    thickness = softplus(thickness[0]) * jnp.ones(problem.number_of_elements)
+    jax.debug.print("thickness in loss: {th}",th=thickness)
+    vals = problem._solve(thickness, max_time=max_time)
 
 
-    #when add here still get nan values of thickness :/
-    #thickness = jnp.where(jnp.isnan(thickness), 1e-4, thickness)
-    #problem1.thickness = thickness  # Update the thickness in the problem object
+    damage = problem._compute_damage(vals[5],vals[3],vals[7])
+
+    max_damage = damage.max()
+    mean_damage = damage.sum() / problem.num_nodes
+
+    loss_value = max_damage + mean_damage
+    #loss_value = mean_damage
+
+    jax.debug.print("max dam: {md}", md=max_damage)
+    jax.debug.print("mean dam: {MD}", MD=mean_damage)
+    jax.debug.print("loss: {l}", l=loss_value)
+
     
 
-
-    return loss
+    return loss_value
 
 
 ### Main Program ####
@@ -913,14 +654,9 @@ if __name__ == "__main__":
     #Define problem size
     fixed_length = 10.0 
     delta_x = 0.25
-    fixed_horizon = 2.6 * delta_x
-
-    #define load
-    #pres_velo = 1.0
-    pres_velo = None
-    pres_traction = 5.0E8
-    #pres_traction = None
-    #max_time = 1E-02
+    fixed_horizon = 3.6 * delta_x
+    #increased horizon to 3.6 from 2.6, smoothes things out and makes them more stable
+    #error might have started then?
 
     #Instantiate a 1d peridynamic problem with equally spaced nodes
     problem1 = PDJAX(bar_length=fixed_length,
@@ -928,88 +664,56 @@ if __name__ == "__main__":
                      bulk_modulus=200e9,
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
-                     thickness=1.0,
-                     critical_stretch=1.0e-4,
-                     prescribed_traction=pres_traction)
-    
-        #problem1.solve(max_time=1E3, prescribed_velocity=1.0)
-    #
+                     thickness=2.126928,
+                     prescribed_traction=1.0e8,
+                     critical_stretch=1.0e-4)
 
+    problem1.introduce_flaw(0.0)
 
-    ####### to forward run problem and plot displacement ################
-    #######
-    #disp, vel, acc, inf_state, _ = problem1.solve(prescribed_traction=pres_traction, prescribed_velocity=pres_velo,vol_state,max_time=1.0e-03)
-    #fig, ax = plt.subplots()
-    #ax.plot(problem1.get_nodes(), problem1.get_solution(disp), 'k.')
-    #plt.show()
+    thickness = jnp.ones(problem1.num_nodes) * 0.5
+    problem1.solve(max_time=1.0e-3)
+    # #
+    print(vals[0])
 
-    ######
-    ############################################################
-    
-    #problem1.introduce_flaw(0.0)
-    #problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
-    #problem1.solve(max_time=1.0e-3, prescribed_velocity=1.0)
-    #problem1.solve(max_time=1.0e-3, prescribed_traction=1E7)
-
-
-
-    #
-    #fig, ax = plt.subplots()
-    #ax.plot(problem1.get_nodes(), problem1.get_solution(disp), 'k.')
-    #plt.show()
-
-    #'''
-    ######## to run optimization loop and plot results ###############################################
-    #############
-    guess = jnp.ones(problem1.number_of_elements)
-    print("guess thickness : ",guess)
-    #thickness = 1
-    result = jax.scipy.optimize.minimize(loss, guess, args=(problem1,), method='BFGS')
-    optimized_thickness = result.x  # Optimized thickness from the result
-    print("optimized_thickness: ",optimized_thickness)
-    #problem1.setup_discretization(optimized_thickness)
-
-
-    
-
-    # Update the problem with the optimized thickness
-
-    #printing the result of the optimization
-    # Solve the problem using the optimized thickness
-    disp, vel, acc, inf_state, time, vol_state, rev_vol_state, thickness, time_step, width = problem1.solve(
-        prescribed_velocity=pres_velo, 
-        prescribed_traction=pres_traction, 
-        vol_state = vol_state,
-
-
-        rev_vol_state = rev_vol_state,
-        thickness = optimized_thickness,
-        width = width,
-        max_time=1.0E-03)
-    
     fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), problem1.get_solution(disp), 'k.')
+    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
+    ax.set_xlabel(r'$x$')
+    ax.set_ylabel(r'displacement')
     plt.show()
+
+
+
+
+    
+    key = jax.random.PRNGKey(0)  # Seed for reproducibility
+
+    # Create a random array with values between 0.5 and 1.0
+    #shape = (problem1.num_nodes,)  # Example shape (adjust as needed)
+    #minval = 0.25
+    #maxval = 2.0
+    #thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    #scalar_int = jnp.array([2.0])  # Make it a 1-element array
+    #thickness = jnp.ones(problem1.number_of_elements)
+    #thickness_scaled = 2.0 * thickness
+
+    #problem1.solve(max_time=1.0e-3)
+
+
+    #init_thick = softplus(scalar_int[0]) * jnp.ones(problem1.number_of_elements)
+    #pt_scalar = softplus(result.x)
+    #opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
+
+    #result = jax.scipy.optimize.minimize(loss, scalar_int, args=(problem1,), method='BFGS') 
+
+    #opt_thickness = softplus(result.x)
+    #vals = problem1._solve(init_thick)
+    #print("opt_thickness: ",opt_thickness)
+    #print("disp: ",vals[0])
+    #fig, ax = plt.subplots()
+    #ax.plot(problem1.get_nodes(), vals[0], 'ko')
+    #ax.set_xlabel(r'$x$')
+    #ax.set_ylabel(r'displacement')
+    #plt.show()
     
 
-    # Plot the optimized thickness profile
-    fig, ax = plt.subplots(2, 1, figsize=(8, 8))
-
-    # Plot the optimized thickness along the bar
-    ax[0].plot(problem1.get_nodes(), optimized_thickness, 'b.-')
-    ax[0].set_xlabel('Position along bar')
-    ax[0].set_ylabel('Optimized Thickness')
-    ax[0].set_title('Optimized Thickness Profile')
-
-    # Plot the displacement field after optimization
-    ax[1].plot(problem1.get_nodes(), problem1.get_solution(disp), 'k.-')
-    ax[1].set_xlabel('Position along bar')
-    ax[1].set_ylabel('Displacement')
-    ax[1].set_title('Displacement After Optimization')
-
-    plt.tight_layout()
-    plt.show()
-    #####################################
-    #'''
-    
 
