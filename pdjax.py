@@ -23,6 +23,7 @@ from typing import Union, Tuple
 
 import optax
 from jax import jit, vmap, grad, value_and_grad
+from jax import lax
 
 
 
@@ -256,6 +257,7 @@ class PDJAX():
         #jax.debug.print("vol_state: {v}", v=vol_state)
 
         vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
+
         #print("vol_state:", vol_state)
 
         # Check to see if the neighboring node has a partial volume
@@ -274,6 +276,19 @@ class PDJAX():
         # vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
         vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
 
+
+
+        def true_fn(vol_state):
+            jax.debug.print("vol_state is all finite.")
+            return vol_state
+
+        def false_fn(vol_state):
+            jax.debug.print("vol_state: {t}", t=vol_state)
+            return vol_state
+
+
+        is_finite = jnp.isfinite(vol_state).all()
+        vol_state = jax.lax.cond(is_finite, true_fn, false_fn, vol_state) 
         # Now compute the "reverse volume state", this is the partial volume of the "source" node, i.e. node i,
         # as seen from node j.  This doesn't show up anywhere in any papers, it's just used here for computational
         # convenience
@@ -287,6 +302,10 @@ class PDJAX():
         # Set attributes
         # self.volume_state = vol_state
         # self.reverse_volume_state = rev_vol_state
+
+        #jax.debug.breakpoint()
+
+
 
         return (vol_state, rev_vol_state)
 
@@ -389,6 +408,11 @@ class PDJAX():
         force_state = inf_state * scalar_force_state * def_unit_state
 
         # jax.debug.print('force_state: {f}', f=force_state.at[:].get())
+
+        #self.breakpoint_if_nonfinite(ref_pos_state)
+        #self.breakpoint_if_nonfinite(ref_mag_state)
+
+        #jax.debug.breakpoint()
 
         ###  return bond_strain_energy
         return force_state, inf_state, bond_strain_energy
@@ -530,6 +554,7 @@ class PDJAX():
             #jax.debug.print("force at left bc region: {f}", f=force.at[self.left_bc_region].get())
             #jax.debug.print("force at right bc region: {f}", f=force.at[self.right_bc_region].get())
             #jax.debug.print("strain_energy: {s}", s=jnp.sum(strain_energy))
+
         return force, inf_state, strain_energy
 
 
@@ -561,7 +586,7 @@ class PDJAX():
         
 
         strain_energy_total = jnp.sum(strain_energy)
-        jax.debug.print("strain_energy_total in solve_one_step: {tse}", tse=strain_energy_total)
+        #jax.debug.print("strain_energy_total in solve_one_step: {tse}", tse=strain_energy_total)
 
         #return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, time + time_step)
         return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_total, time + time_step)
@@ -578,15 +603,21 @@ class PDJAX():
         time_step = 1.0e-6
         #time_step = 1.0e-6
         num_steps = int(max_time / time_step)
-
+        
         if thickness is None:
             thickness = self.thickness
+        
+                
+        min_thickness = 1e-3  # or something physically reasonable
+        
+        thickness = jnp.clip(thickness, a_min=min_thickness,a_max=None) 
+    
+        
+        #jax.debug.print("thickness in solve before comp part vol: {t}",t=thickness)
+         
+        
 
         vol_state, rev_vol_state = self.compute_partial_volumes(thickness)
-
-
-        #jax.debug.print("vol_state aft comp p v: {vs}",vs=vol_state)
-        #jax.debug.print("rev_vol_s update: {rv}",rv=rev_vol_state)
 
         inf_state = self.influence_state.copy() 
         undamaged_inf_state = self.undamaged_influence_state.copy()
@@ -608,14 +639,17 @@ class PDJAX():
 
         # Define loop body (takes index and current vals)
         def loop_body(i, vals):
-            jax.debug.print("entering solve_one_step: {i}", i=i)
+            #jax.debug.print("entering solve_one_step: {i}", i=i)
             vals = self.solve_one_step(vals)
             return vals
-
+        
+        #jax.debug.print("thickness in solve before scan: {t}", t=thickness)
         #Solve
         vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy, time)
 
-        jax.debug.print("strain_energy in solve before scan: {v}", v=vals[8])
+
+
+
 
         vals = jax.lax.fori_loop(0, num_steps, loop_body, vals)
 
@@ -647,8 +681,8 @@ class PDJAX():
         '''
 
         
-        jax.debug.print("final strain_energy_total in solve: {tse}", tse=jnp.sum(vals[8]))
-        jax.debug.print("thickness in solve: {i}", i=vals[6])
+        #jax.debug.print("final strain_energy_total in solve: {tse}", tse=jnp.sum(vals[8]))
+        #jax.debug.print("thickness in solve: {i}", i=vals[6])
         #jax.debug.print("acc in solve: {a}", a=vals[2])
         #jax.debug.print("disp in solve: {d}", d=vals[0])
 
@@ -660,7 +694,7 @@ class PDJAX():
         '''
             Solves in time using Verlet-Velocity
         '''
-
+        jax.debug.print("thickness in solve: {t}", t=self.thickness)
         vals = self._solve(max_time=max_time)
 
         self.displacement = vals[0]
@@ -680,22 +714,35 @@ class PDJAX():
     def get_nodes(self):
         ''' Convenience function for retrieving peridynamic node locations'''
         return self.pd_nodes
-    
+
+
+
+
 #def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
 def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-1):
     
     ###################################################
+
+    jax.debug.print("starting loss through: {i}",i=1)
+    thickness =  softplus(thickness)
+
+    def true_fn(thickness):
+        jax.debug.print("thickness is all finite.")
+        return thickness
+
+    def false_fn(thickness):
+        jax.debug.print("Non-finite thickness detected: {t}", t=thickness)
+        return thickness
+
+    is_finite = jnp.isfinite(thickness).all()
+    thickness = jax.lax.cond(is_finite, true_fn, false_fn, thickness)  
+
     jax.debug.print("thickness in loss begin: {th}", th=thickness)
 
     min_thickness = 1e-3  # or something physically reasonable
     thickness = jnp.clip(thickness, a_min=min_thickness) 
 
-    for i in range(thickness.shape[0]):
-        if thickness[i] < min_thickness:
-            jax.debug.print("thickness at index {i} is below min: {t}", i=i, t=thickness[i])
-            # If any thickness is below the minimum, return a large loss
-            return jnp.inf
-        
+    jax.debug.print("thickness in loss after clip: {tse}", tse=thickness)
 
     #thickness = softplus(thickness)
 
@@ -705,25 +752,38 @@ def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-1):
 
 
     vals = problem._solve(thickness, max_time=max_time)
-    
+
     #### set loss value to strain_energy #######
     ### using total strain energy of bar with thickness 1.0
     normalization_factor = 1E9
     total_strain_energy = jnp.sum(vals[8])
+
+
     #loss_value = total_strain_energy / normalizaion_factor
     max_thickness = jnp.max(thickness)
     mean_thickness = jnp.mean(thickness)
     #loss_value = max_thickness
 
-    #loss_value = 0.1 * (total_strain_energy/normalization_factor)
-    loss_value =  mean_thickness/max_thickness 
+    loss_value = 0.1 * (total_strain_energy/normalization_factor)
+    #loss_value =  mean_thickness/max_thickness 
 
     
     jax.debug.print("max thickness: {mt}", mt=max_thickness)
     jax.debug.print("total strain energy: {tse}", tse=total_strain_energy/normalization_factor)
     jax.debug.print("loss: {l}", l=loss_value)
     #####################################################################
+    #breakpoint_if_nonfinite(thickness)
 
+    def true_fn(thickness):
+        jax.debug.print("thickness is all finite.")
+        return thickness
+
+    def false_fn(thickness):
+        jax.debug.print("Non-finite thickness detected: {t}", t=thickness)
+        return thickness
+
+    is_finite = jnp.isfinite(thickness).all()
+    thickness = jax.lax.cond(is_finite, true_fn, false_fn, thickness)  
 
     return loss_value
 
@@ -760,8 +820,8 @@ if __name__ == "__main__":
                      prescribed_force=1.0e8,
                      critical_stretch=1.0e-4)
 
-    
-    problem1.solve(max_time=1.0e-2)
+    '''
+    problem1.solve(max_time=1.0e-3)
     
 
     
@@ -770,9 +830,72 @@ if __name__ == "__main__":
     ax.set_xlabel(r'$x$')
     ax.set_ylabel(r'displacement')
     plt.show()
+    '''
 
-
+  
     
+    #######################################
+    #problem1.introduce_flaw(0.0)
+
+    #thickness = jnp.ones(problem1.num_nodes) * 0.5
+    #problem1.solve(max_time=1.0e-3)
+    # #
+    #print(vals[0])
+
+    #fig, ax = plt.subplots()
+    #ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
+    #ax.set_xlabel(r'$x$')
+    #ax.set_ylabel(r'displacement')
+    #plt.show()
+    key = jax.random.PRNGKey(0)  # Seed for reproducibility
+
+    # Create a random array with values between 0.5 and 1.0
+    shape = (problem1.num_nodes,)  # Example shape (adjust as needed)
+    minval = 0.5
+    maxval = 1.0
+    thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS', tol=0.1)
+    #print("opt result.x,thickness: ",softplus(result.x))
+
+
+    #thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    #scalar_int = jnp.array([2.0])  # Make it a 1-element array
+    #thickness = jnp.ones(problem1.number_of_elements)
+    #thickness_scaled = 2.0 * thickness
+
+    #problem1.solve(max_time=1.0e-3)
+
+
+    #init_thick = softplus(scalar_int[0]) * jnp.ones(problem1.number_of_elements)
+    #pt_scalar = softplus(result.x)
+    #opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
+ 
+    #result = jax.scipy.optimize.minimize(loss, scalar_int, args=(problem1,), method='BFGS') 
+
+
+    #init_thick = softplus(scalar_int[0]) * jnp.ones(problem1.number_of_elements)
+    opt_thickness = softplus(result.x)
+    #opt_thickness_no_softplus = result.x
+    #opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
+
+
+
+
+    #opt_thickness = pt_scalar
+    #vals = problem1._solve(opt_thickness)
+    print("opt_thickness: ",opt_thickness)
+    
+    #print("opt_thickness_no_softplus: ",opt_thickness_no_softplus)
+    print("disp: ",vals[0])
+    fig, ax = plt.subplots()
+    ax.plot(problem1.get_nodes(), vals[0], 'ko')
+    ax.set_xlabel(r'$x$')
+    ax.set_ylabel(r'displacement')
+    plt.show()
+    ###################################################
+    
+
+    '''  
     ################  now using optax to maximize ##########################
     # Initial parameter (scalar for thickness)
     key = jax.random.PRNGKey(0)  # Seed for reproducibility
@@ -780,10 +903,11 @@ if __name__ == "__main__":
     # Create a random array with values between 0.5 and 1.0
     shape = (problem1.num_nodes,)  # Example shape (adjust as needed)
     #minval = 1.15
-    minval = 1.15
+    minval = 1.00
     maxval = 2.0
     #param_int = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    param = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    init_param = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    param =  softplus(init_param)
     #param =  jnp.ones(problem1.num_nodes) * # Initial thickness guess
     
     #param = thickness
@@ -803,17 +927,42 @@ if __name__ == "__main__":
     # Loss function (already defined as 'loss')
     loss_and_grad = jax.value_and_grad(loss)
 
+
+    
+
+
     # Optimization loop
     for step in range(num_steps):
+        def true_fn(thickness):
+            jax.debug.print("thickness is all finite.")
+            return thickness
+
+        def false_fn(thickness):
+            jax.debug.print("Non-finite thickness detected: {t}", t=thickness)
+            return thickness
+
+        print("performing jax.lax.cond check in optax optimization loop")
+        is_finite = jnp.isfinite(thickness).all()
+        thickness = jax.lax.cond(is_finite, true_fn, false_fn, thickness) 
+
+        print("thickness in optax loop: ", thickness)
+
         #param_int = jnp.clip(param_int, a_min=thickness_min, a_max=thickness_max)  # Ensure thickness is within bounds
         #param = softplus(param_int)  # Apply softplus to ensure positivity
+        param = jnp.clip(param, a_min=1e-3, a_max=1e3)  # or use softplus
         loss_val, grads = loss_and_grad(param, problem1)
+
+
 
         print(f"Step {step},  loss: {loss_val}, grads: {grads}")
 
+        #breakpoint_if_nonfinite(grads)
+        '''
         if jnp.isnan(loss_val) or jnp.any(jnp.isnan(grads)):
             print("NaN detected! Stopping optimization.")
             break
+        '''
+
 
         updates, opt_state = optimizer.update(grads, opt_state, param)
         param = optax.apply_updates(param, updates)
@@ -826,7 +975,7 @@ if __name__ == "__main__":
     opt_thickness = param
     #vals = problem1._solve(opt_thickness)
     print("opt_thickness: ", opt_thickness)
-    '''
+    
     print("disp: ", vals[0])
     fig, ax = plt.subplots()
     ax.plot(problem1.get_nodes(), vals[0], 'ko')
