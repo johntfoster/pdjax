@@ -26,7 +26,6 @@ from jax import jit, vmap, grad, value_and_grad
 from jax import lax
 
 
-
 class PDJAX():
     '''
        This class initializes a 1D peridynamic problem.  This problem is essentially
@@ -103,7 +102,7 @@ class PDJAX():
         # Debug plotting
         # _, ax = plt.subplots()
         # self.line, = ax.plot(self.pd_nodes, self.displacement)
-        #self._allow_damage = True
+        self._allow_damage = False
 
         self.critical_stretch = critical_stretch
 
@@ -513,7 +512,7 @@ class PDJAX():
         force = (force_state * vol_state).sum(axis=1)
         force = force.at[neigh].add(-force_state * rev_vol_state)
 
-        strain_energy = (bond_strain_energy * vol_state).sum(axis=1)
+        strain_energy = 0.5 * (bond_strain_energy * vol_state).sum(axis=1)
         #total_strain_energy = jnp.sum(strain_energy)
         #jax.debug.print("strain_energy: {s}", s=jnp.sum(strain_energy))
 
@@ -606,16 +605,6 @@ class PDJAX():
         
         if thickness is None:
             thickness = self.thickness
-        
-                
-        min_thickness = 1e-3  # or something physically reasonable
-        
-        thickness = jnp.clip(thickness, a_min=min_thickness,a_max=None) 
-    
-        
-        #jax.debug.print("thickness in solve before comp part vol: {t}",t=thickness)
-         
-        
 
         vol_state, rev_vol_state = self.compute_partial_volumes(thickness)
 
@@ -724,6 +713,9 @@ def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-1):
     ###################################################
 
     jax.debug.print("starting loss through: {i}",i=1)
+
+    min_thickness = 1e-3  # or something physically reasonable
+    thickness = jnp.clip(thickness, a_min=min_thickness) * jnp.ones(problem.num_nodes)
     thickness =  softplus(thickness)
 
     def true_fn(thickness):
@@ -739,8 +731,6 @@ def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-1):
 
     jax.debug.print("thickness in loss begin: {th}", th=thickness)
 
-    min_thickness = 1e-3  # or something physically reasonable
-    thickness = jnp.clip(thickness, a_min=min_thickness) 
 
     jax.debug.print("thickness in loss after clip: {tse}", tse=thickness)
 
@@ -764,7 +754,7 @@ def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0E-1):
     mean_thickness = jnp.mean(thickness)
     #loss_value = max_thickness
 
-    loss_value = 0.1 * (total_strain_energy/normalization_factor)
+    loss_value = total_strain_energy
     #loss_value =  mean_thickness/max_thickness 
 
     
@@ -817,8 +807,8 @@ if __name__ == "__main__":
                      number_of_elements=int(fixed_length/delta_x), 
                      horizon=fixed_horizon,
                      thickness=thickness,
-                     prescribed_force=1.0e8,
-                     critical_stretch=1.0e-4)
+                     prescribed_force=1.0e8)
+                     #critical_stretch=1.0e-4)
 
     '''
     problem1.solve(max_time=1.0e-3)
@@ -853,8 +843,9 @@ if __name__ == "__main__":
     shape = (problem1.num_nodes,)  # Example shape (adjust as needed)
     minval = 0.5
     maxval = 1.0
-    thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS', tol=0.1)
+    #thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    # thickness = jnp.array([0.5])
+    # result = jax.scipy.optimize.minimize(loss, thickness, args=(problem1,), method='BFGS', tol=0.1)
     #print("opt result.x,thickness: ",softplus(result.x))
 
 
@@ -874,7 +865,7 @@ if __name__ == "__main__":
 
 
     #init_thick = softplus(scalar_int[0]) * jnp.ones(problem1.number_of_elements)
-    opt_thickness = softplus(result.x)
+    # opt_thickness = softplus(result.x)
     #opt_thickness_no_softplus = result.x
     #opt_thickness = opt_scalar * jnp.ones(problem1.number_of_elements)
 
@@ -883,19 +874,18 @@ if __name__ == "__main__":
 
     #opt_thickness = pt_scalar
     #vals = problem1._solve(opt_thickness)
-    print("opt_thickness: ",opt_thickness)
+    # print("opt_thickness: ",opt_thickness)
     
     #print("opt_thickness_no_softplus: ",opt_thickness_no_softplus)
-    print("disp: ",vals[0])
-    fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), vals[0], 'ko')
-    ax.set_xlabel(r'$x$')
-    ax.set_ylabel(r'displacement')
-    plt.show()
+    # print("disp: ",vals[0])
+    # fig, ax = plt.subplots()
+    # ax.plot(problem1.get_nodes(), vals[0], 'ko')
+    # ax.set_xlabel(r'$x$')
+    # ax.set_ylabel(r'displacement')
+    # plt.show()
     ###################################################
     
 
-    '''  
     ################  now using optax to maximize ##########################
     # Initial parameter (scalar for thickness)
     key = jax.random.PRNGKey(0)  # Seed for reproducibility
@@ -906,8 +896,9 @@ if __name__ == "__main__":
     minval = 1.00
     maxval = 2.0
     #param_int = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    init_param = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
-    param =  softplus(init_param)
+    #init_param = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    param = jnp.array([1.0])
+    #param =  softplus(init_param)
     #param =  jnp.ones(problem1.num_nodes) * # Initial thickness guess
     
     #param = thickness
@@ -928,9 +919,6 @@ if __name__ == "__main__":
     loss_and_grad = jax.value_and_grad(loss)
 
 
-    
-
-
     # Optimization loop
     for step in range(num_steps):
         def true_fn(thickness):
@@ -949,23 +937,27 @@ if __name__ == "__main__":
 
         #param_int = jnp.clip(param_int, a_min=thickness_min, a_max=thickness_max)  # Ensure thickness is within bounds
         #param = softplus(param_int)  # Apply softplus to ensure positivity
-        param = jnp.clip(param, a_min=1e-3, a_max=1e3)  # or use softplus
-        loss_val, grads = loss_and_grad(param, problem1)
+        h = 0.00000001
+        loss_val1, _ = loss_and_grad(param, problem1)
+        loss_val2, _ = loss_and_grad(param + h, problem1)
+        loss_val = loss_val1
+        grads = jnp.abs(loss_val2 - loss_val1) / h 
+
+        print(f"Loss difference: {jnp.abs(loss_val2 - loss_val1)}")
 
 
 
         print(f"Step {step},  loss: {loss_val}, grads: {grads}")
 
         #breakpoint_if_nonfinite(grads)
-        '''
-        if jnp.isnan(loss_val) or jnp.any(jnp.isnan(grads)):
-            print("NaN detected! Stopping optimization.")
-            break
-        '''
+        # if jnp.isnan(loss_val) or jnp.any(jnp.isnan(grads)):
+        #     print("NaN detected! Stopping optimization.")
+        #     break
 
 
         updates, opt_state = optimizer.update(grads, opt_state, param)
         param = optax.apply_updates(param, updates)
+        print(f"Updated param: {param}")
         #print("updated param: ", param)
         if step % 20 == 0:
             print(f"Step {step}, loss: {loss_val}")
@@ -974,12 +966,11 @@ if __name__ == "__main__":
     # Use the optimized thickness
     opt_thickness = param
     #vals = problem1._solve(opt_thickness)
-    print("opt_thickness: ", opt_thickness)
+    print("opt_thickness: ", softplus(opt_thickness))
     
-    print("disp: ", vals[0])
-    fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), vals[0], 'ko')
-    ax.set_xlabel(r'$x$')
-    ax.set_ylabel(r'displacement')
-    plt.show()
-    '''
+    # print("disp: ", vals[0])
+    # fig, ax = plt.subplots()
+    # ax.plot(problem1.get_nodes(), vals[0], 'ko')
+    # ax.set_xlabel(r'$x$')
+    # ax.set_ylabel(r'displacement')
+    # plt.show()
