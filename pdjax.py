@@ -24,6 +24,8 @@ from typing import Union, Tuple
 import optax
 from jax import jit, vmap, grad, value_and_grad
 from jax import lax
+from jax import grad
+from jax.experimental import checkify
 
 
 class PDJAX():
@@ -240,14 +242,16 @@ class PDJAX():
         self.width = width
         vol_state_uncorrected = lens[neigh] * thickness[neigh] * width 
 
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_state_uncorrected)))
+
+        #jax.debug.print("thickness[neigh]: {t} ", t=thickness[neigh])
+
         #jax.debug.print("vol_state_unc in com p v: {v}", v=vol_state_uncorrected.shape)
         #jax.debug.print("ref_mag_state : {l}", l=ref_mag_state.shape)
 
         #Zero out entries that are not in the family
         vol_state_uncorrected = jnp.where(ref_mag_state < 1.0e-16, 0.0, vol_state_uncorrected) 
-        
-        # print(vol_state_uncorrected)
-
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_state_uncorrected)))
 
         #jax.debug.print("thickness: {t}", t=thickness)
         #jax.debug.print("neigh: {n}", n=neigh)
@@ -256,43 +260,56 @@ class PDJAX():
         #jax.debug.print("vol_state: {v}", v=vol_state)
 
         vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_state)))
 
-        #print("vol_state:", vol_state)
 
         # Check to see if the neighboring node has a partial volume
         is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(is_partial_volume)))
 
         # Two different scenarios:
         is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
         is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(is_partial_volume_case1)))
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(is_partial_volume_case2)))
 
 
         # Compute the partial volumes conditionally
         vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[neigh], vol_state)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_state)))
         vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness[neigh], vol_state)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_state)))
 
         # If the partial volume is predicted to be larger than the unocrrected volume, set it back
         # vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
         vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_state)))
 
 
         # Now compute the "reverse volume state", this is the partial volume of the "source" node, i.e. node i,
         # as seen from node j.  This doesn't show up anywhere in any papers, it's just used here for computational
         # convenience
         vol_array = lens[:,None] * width * thickness[:, None]
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_array)))
+
         rev_vol_state = jnp.ones_like(vol_state) * vol_array
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
+        
         rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * width * thickness[:, None], rev_vol_state)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
+        
         rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * width * thickness[:, None], rev_vol_state)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
+       
         #If the partial volume is predicted to be larger than the uncorrected volume, set it back
         rev_vol_state = jnp.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
 
         # Set attributes
         # self.volume_state = vol_state
         # self.reverse_volume_state = rev_vol_state
 
         #jax.debug.breakpoint()
-
-
 
         return (vol_state, rev_vol_state)
 
@@ -342,22 +359,26 @@ class PDJAX():
 
         #Compute the deformed positions of the nodes
         def_pos = ref_pos + disp
+        #jax.debug.print("def_pos finite: {b}", b=jnp.all(jnp.isfinite(def_pos)))
 
         #Compute deformation state
         def_state = def_pos[neigh] - def_pos[:,None]
-
+        #jax.debug.print("def_state finite: {b}", b=jnp.all(jnp.isfinite(def_state)))
+        
         # Compute deformation magnitude state
         def_mag_state = jnp.sqrt(def_state * def_state)
+        #jax.debug.print("def_mag_state finite: {b}", b=jnp.all(jnp.isfinite(def_mag_state)))
+        #jax.debug.print('def_mag_state: {d}', d=def_mag_state.at[:].get())
 
         # Compute deformation unit state
         def_unit_state = jnp.where(def_mag_state > 1.0e-16, def_state / def_mag_state, 0.0)
-
+        #jax.debug.print("def_unit_state finite: {b}", b=jnp.all(jnp.isfinite(def_unit_state)))
         # Compute scalar extension state
         exten_state = def_mag_state - ref_mag_state
+        #jax.debug.print("exten_state finite: {b}", b=jnp.all(jnp.isfinite(exten_state)))
 
         stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
-        # jax.debug.print('stretch: {s}', s=stretch.at[:].get())
-
+        #jax.debug.print("stretch: {b}", b=jnp.all(jnp.isfinite(stretch)))
         # Apply a critical strech fracture criteria
         if self._allow_damage :
             
@@ -375,9 +396,11 @@ class PDJAX():
         shape_tens = (inf_state * ref_pos_state * ref_pos_state * vol_state).sum(axis=1)
         shape_tens = jnp.where(jnp.abs(shape_tens) < epsilon, epsilon, shape_tens)
 
+
         # Compute scalar force state for a elastic constitutive model
         ######### compute strain energy density here?  or calculation at least should look like this line here ########
         scalar_force_state = 9.0 * K / shape_tens[:, None] * exten_state
+
         # bond strain energy calc
         bond_strain_energy = 9.0 * K / shape_tens[:, None] * exten_state * exten_state * ref_mag_state
 
@@ -486,21 +509,25 @@ class PDJAX():
             
         # Define some local convenience variables     
         neigh = self.neighborhood
-        
+
         # Compute the force vector-state according to the choice of constitutive
         # model 
         # jax.debug.print("inf_state before c_f_st: {i}",i=inf_state) 
         
         ##### return bond_strain_energy #####
         force_state, inf_state, bond_strain_energy = self.compute_force_state_LPS(disp, vol_state, inf_state)
-        # jax.debug.print("inf_state after c_f_st: {i}",i=inf_state) 
+        #jax.debug.print("bond_strain_energy c_f_st: {i}",i=bond_strain_energy) 
 
 
         #Integrate nodal forces 
         force = (force_state * vol_state).sum(axis=1)
         force = force.at[neigh].add(-force_state * rev_vol_state)
 
+
+        #strain_energy = bond_strain_energy
         strain_energy = 0.5 * (bond_strain_energy * vol_state).sum(axis=1)
+
+
         #total_strain_energy = jnp.sum(strain_energy)
         #jax.debug.print("strain_energy: {s}", s=jnp.sum(strain_energy))
 
@@ -517,7 +544,7 @@ class PDJAX():
             #left_bc_area = self.width * thickness[self.left_bc_region]
             #left_bc_nodal_forces = ramp_force * left_bc_area
             left_bc_nodal_forces = (ramp_force * self.width * self.width)/(vol_state[li].sum() + rev_vol_state[li][0])
-            force = force.at[self.left_bc_region].add(-left_bc_nodal_forces)
+
             # For the leftmost node (if needed)
             #left_bc_area_li = self.width * thickness[li]
             #force = force.at[li].add(-ramp_force * left_bc_area_li)
@@ -534,6 +561,7 @@ class PDJAX():
             #right_bc_nodal_forces = ramp_force * right_bc_area
             right_bc_nodal_forces = (ramp_force * self.width * self.width)/(vol_state[li].sum() + rev_vol_state[li][0])
             force = force.at[self.right_bc_region].add(right_bc_nodal_forces)
+
             # For the rightmost node (if needed)
             #right_bc_area_ri = self.width * thickness[ri]
             #force = force.at[ri].add(ramp_force * right_bc_area_ri)
@@ -552,9 +580,9 @@ class PDJAX():
         (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_init, time) = vals
 
         # TODO: Solve for stable time step
-        time_step = 1.0e-8
+        time_step = 1E-06
 
-        jax.debug.print("in solve_one_step: {t}", t=time)
+        #jax.debug.print("in solve_one_step: {t}", t=time)
         ##########################
         # Check inputs for NaNs
         ##########################
@@ -563,7 +591,7 @@ class PDJAX():
             ["disp", "vel", "acc", "vol_state", "rev_vol_state", "inf_state", "thickness"],
             [disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness]):
             is_finite = jnp.all(jnp.isfinite(vals))
-            jax.debug.print("NaNs detected in {n}: {f}", n=vals, f=is_finite)
+            #jax.debug.print("no NaNs detected in {n}: {f}", n=vals, f=is_finite)
 
         if self.prescribed_velocity is not None:
             bc_value = self.prescribed_velocity * time
@@ -571,14 +599,23 @@ class PDJAX():
             f = lambda x: 2.0 * bc_value / self.bar_length * x
             disp = disp.at[self.left_bc_region].set(f(self.pd_nodes[self.left_bc_region]))
             disp = disp.at[self.right_bc_region].set(f(self.pd_nodes[self.right_bc_region]))
+        
 
-        jax.debug.print("disp: {d}", d=disp)
-        jax.debug.print("vel: {v}", v=vel)
-        jax.debug.print("acc: {a}", a=acc)
+        #jax.debug.print("disp: {d}", d=disp)
+        #jax.debug.print("vel: {v}", v=vel)
+        #jax.debug.print("acc: {a}", a=acc)
 
 
         #### return strain_energy here #####
         force, inf_state, strain_energy = self.compute_internal_force(disp, vol_state, rev_vol_state, inf_state, thickness, time)
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(inf_state)))
+
+        #### checking for nan values in solve_one_step ###
+        '''
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(force)))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(inf_state)))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(strain_energy)))
+        '''
 
         ###################################
         # checking internal forces for nans
@@ -588,24 +625,59 @@ class PDJAX():
             #jax.debug.print("NaNs detected in {n}: {f}", n=name, f=is_finite)
 
         acc_new = force / self.rho
+
         #if not jnp.all(jnp.isfinite(acc_new)):
             #jax.debug.print("NaNs detected in acc_new")
 
         vel = vel.at[:].add(0.5 * (acc + acc_new) * time_step)
+
         #if not jnp.all(jnp.isfinite(vel)):
             #jax.debug.print("NaNs detected in vel update")
 
 
         disp = disp.at[:].add(vel * time_step + (0.5 * acc_new * time_step * time_step))
+
         #if not jnp.all(jnp.isfinite(disp)):
             #jax.debug.print("NaNs detected in disp update")
 
         acc = acc.at[:].set(acc_new)
 
+        #if not jnp.all(jnp.isfinite(acc)):
+            #jax.debug.print("NaNs detected in acc update")
+
+        #strain_energy_total = strain_energy
+        #jax.debug.print("strain_energy in solve_one_step: {s}", s=strain_energy)
         strain_energy_total = jnp.sum(strain_energy)
-        #if not jnp.isfinite(strain_energy_total):
-            #jax.debug.print("NaNs detected in strain_energy_total")
-            
+
+
+        #if not jnp.all(jnp.isfinite(strain_energy_total)):
+            #jax.debug.print("NaNs detected in acc update")
+
+        ####### checking for nan values #######
+
+        '''
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(acc_new)))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vel)))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(disp)))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(acc)))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(strain_energy_total)))
+        '''
+
+        def nan_debug_print(x):
+            jax.debug.print("NaNs detected in strain_energy_total")
+            return x
+
+        def no_nan(x):
+            return x
+        '''
+        # This will always execute, but only print if the condition is true
+        _ = jax.lax.cond(
+            ~jnp.all(jnp.isfinite(strain_energy_total)),
+            nan_debug_print,
+            no_nan,
+            operand=strain_energy_total )
+        '''
+                    
         #return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, time + time_step)
         return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_total, time + time_step)
 
@@ -617,18 +689,34 @@ class PDJAX():
         '''
             Solves in time using Verlet-Velocity
         '''
+
+        #thickness = jnp.clip(thickness, 1e-5, 0.1)
+
+
         #jax.debug.print("max_time: {t}",t=max_time)
-        time_step = 1.0e-7
+        time_step = 1.0e-6
         #time_step = 1.0e-6
+        #jax.debug.print("max_time in solve: {t}", t=max_time)
         num_steps = int(max_time / time_step)
+        #jax.debug.print("num_steps in solve: {n}", n=num_steps)
         
         if thickness is None:
             thickness = self.thickness
 
         vol_state, rev_vol_state = self.compute_partial_volumes(thickness)
 
+        ######### checking for nan values ########
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_state)))
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
+
         inf_state = self.influence_state.copy() 
         undamaged_inf_state = self.undamaged_influence_state.copy()
+
+        '''
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(inf_state)))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(undamaged_inf_state)))
+        '''
+
         # Initialize a fresh influence state for this run
         #inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
 
@@ -641,7 +729,8 @@ class PDJAX():
         #strain_energy_init = self.strain_energy_total
         #strain_energy = jnp.ones(self.number_of_elements)
         #strain_energy = self.strain_energy_total
-        strain_energy = 0.0 
+        #strain_energy = jnp.zeros((40, 8))
+        strain_energy = 0.0
 
     
         '''
@@ -653,42 +742,70 @@ class PDJAX():
         '''
 
         def loop_body(i, vals):
-            jax.debug.print("entering solve_one_step")
+            #jax.debug.print("entering solve_one_step in loop body {i}", i=i)
 
             new_vals = self.solve_one_step(vals)
+            #jax.debug.print("vals: {r}", r=inf_state)
 
+
+            return new_vals
+        
             #jax.debug.print(new_vals[0], new_vals[1], new_vals[2], new_vals[3], new_vals[4], new_vals[5], new_vals[6], new_vals[7], new_vals[8], new_vals[9])
+        '''
             # Check for NaNs immediately after each step
             any_nan = jax.tree_util.tree_reduce(
                 lambda acc, x: acc | jnp.any(jnp.isnan(x)),
                 new_vals,
                 initializer=False
             )
-
+            
             def nan_detected(_):
                 jax.debug.print("NaN detected at step {i}", i=i)
                 return vals  # skip update, keep previous state
 
             def update_ok(_):
                 return new_vals
+        '''
+        
 
-            return jax.lax.cond(any_nan, nan_detected, update_ok, operand=None)
+            #return jax.lax.cond(any_nan, nan_detected, update_ok, operand=None)
+            #return new_vals
         
         #jax.debug.print("thickness in solve before scan: {t}", t=thickness)
         #Solve
         vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy, time)
+        #jax.debug.print("strain fori_loop: {v}", v=vals[8])
+
+        vals_returned = jax.lax.fori_loop(0, num_steps, loop_body, vals)
+
+        ####### checking for nan values ########    
+        '''
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[0])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[1])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[2])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[3])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[4])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[5])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[6])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[7])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[8])))
+        jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[9])))
+        #jax.debug.print("vals[0]: {b}", b=jnp.all(jnp.isfinite(vals_returned[0])))
+        '''
+
+        #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vals_returned[0])))
 
 
-        vals = jax.lax.fori_loop(0, num_steps, loop_body, vals)
+        #jax.debug.print("strain_energy after foriloop: {s}", s=vals_returned[8])
+        #jax.debug.print("vals after fori_loop: {v}", v=vals_returned)
         
-        return vals
-
+        return vals_returned
 
     def solve(self, max_time:float=1.0):
         '''
             Solves in time using Verlet-Velocity
         '''
-        jax.debug.print("thickness in solve: {t}", t=self.thickness)
+        #jax.debug.print("thickness in solve: {t}", t=self.thickness)
         vals = self._solve(max_time=max_time)
 
         self.displacement = vals[0]
@@ -713,28 +830,57 @@ class PDJAX():
 
 
 #def loss(thickness:jax.Array, problem:PDJAX, max_time=1.0e-3):
-def loss(raw_thickness:jax.Array, problem:PDJAX, max_time=1.0E-3):
+def loss(raw_thickness:jax.Array, problem1:PDJAX, max_time:float):
 
+
+    
     min_t, max_t = 1e-3, 0.05
     thickness = min_t + (max_t - min_t) * jax.nn.sigmoid(raw_thickness)
+    checkify.check(jnp.all(jnp.isfinite(thickness)), "NaN in thickness")
 
-    #jax.debug.print("thickness in loss: {t}", t=thickness)
-    #jax.debug.print("Initial thickness: {t}", t=thickness)
-    #assert jnp.all(jnp.isfinite(thickness)), "Initial thickness contains NaNs!"
+    #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(thickness)))
+    #vals = problem1._solve(thickness, max_time=max_time)
 
-    vals = problem._solve(thickness, max_time=max_time)
+    problem1._solve(thickness=thickness, max_time=max_time)
 
+    solution = problem1.get_solution()
+    checkify.check(jnp.all(jnp.isfinite(solution[0])), "NaN in solution")
+
+    jax.debug.print("vals[0]: {t}", t=solution[0])
+
+    #vals = problem._solve(thickness, max_time=max_time)
     #### set loss value to strain_energy #######
     ### using total strain energy of bar with thickness 1.0
 
     # Check for NaNs in energy
-    if jnp.any(jnp.isnan(vals[8])):
-        jax.debug.print("NaNs in strain energy: {v}", v=vals[8])
-        return 1e10  # or jnp.inf to signal failure
+    def nan_debug_print(x):
+        jax.debug.print("NaNs detected in strain_energy_total")
+        return x
 
-    total_strain_energy = jnp.sum(vals[8])
+    def no_nan(x):
+        return x
 
-    return total_strain_energy
+    total_strain_energy = solution[8]
+    #0.5 * (bond_strain_energy * vol_state).sum(axis=1)
+
+    # This will always execute, but only print if the condition is true
+    _ = jax.lax.cond(
+        ~jnp.all(jnp.isfinite(total_strain_energy)),
+        nan_debug_print,
+        no_nan,
+        operand=total_strain_energy )
+    
+    #jax.debug.print("strain energy: {s}", s=vals[8])
+    jax.debug.print("total strain energy: {s}", s=total_strain_energy)
+    #jax.debug.print("vol_state: {t}", t=vol_state)
+
+    #loss_value = total_strain_energy + 0.001 * jnp.sum(raw_thickness)
+
+    loss_value = total_strain_energy
+
+
+
+    return loss_value
 
 
 
@@ -758,6 +904,8 @@ if __name__ == "__main__":
     maxval = 1.50
     #thickness = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
     thickness = 1.15
+    
+
 
     #Instantiate a 1d peridynamic problem with equally spaced nodes
     problem1 = PDJAX(bar_length=fixed_length,
@@ -769,25 +917,16 @@ if __name__ == "__main__":
                      prescribed_force=1.0e8)
                      #critical_stretch=1.0e-4)
 
-    '''
-    problem1.solve(max_time=1.0e-3)
     
 
     
-    fig, ax = plt.subplots()
-    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
-    ax.set_xlabel(r'$x$')
-    ax.set_ylabel(r'displacement')
-    plt.show()
-    '''
-
-  
     
     #######################################
     #problem1.introduce_flaw(0.0)
 
     #thickness = jnp.ones(problem1.num_nodes) * 0.5
-    #problem1.solve(max_time=1.0e-3)
+    problem1.solve(max_time=1.0e-3)
+    thickness = jnp.ones(problem1.num_nodes) * 0.5
     # #
     #print(vals[0])
 
@@ -844,7 +983,7 @@ if __name__ == "__main__":
     # plt.show()
     ###################################################
     
-
+    #'''
     ################  now using optax to maximize ##########################
     # Initial parameter (scalar for thickness)
     key = jax.random.PRNGKey(0)  # Seed for reproducibility
@@ -862,14 +1001,14 @@ if __name__ == "__main__":
     
     #param = thickness
     #param = jnp.array([2.0])
-    learning_rate = 1E-3
+    learning_rate = 1E-28
     num_steps = 5
 
     thickness_min= 1.0E-2
     thickness_max = 1.0E2
 
     #define gradient bounds
-    lower = 1E-1
+    lower = 1E-2
     upper = 20
 
     # Optax optimizer
@@ -910,7 +1049,8 @@ if __name__ == "__main__":
 
         #h = 1.0E-38
         jax.debug.print("initial param: {p}", p=param)
-        loss_val, grads = loss_and_grad(param, problem1, max_time=1.0E-7)
+        loss_val, grads = loss_and_grad(param, problem1, max_time=1.0E-3)
+        jax.debug.print("grads: {g}", g=grads)
         #loss_val2, grads = loss_and_grad(param + h, problem1)
         #loss_val = loss_val1
         #grads = jnp.abs(loss_val2 - loss_val1) / h 
@@ -944,3 +1084,48 @@ if __name__ == "__main__":
     # ax.set_xlabel(r'$x$')
     # ax.set_ylabel(r'displacement')
     # plt.show()
+
+
+    #'''
+
+    #init_param = jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
+    '''
+    #to do some sanity checks
+    thickness = jnp.ones((problem1.num_nodes,)) * 1.0
+    #thickness = jnp.array([1.0])
+    problem1.solve(max_time=1.0e-3)
+    
+
+    
+    loss_val = loss(thickness, problem1, max_time=1e-3)
+    print("LOSS VALUE: ", loss_val)
+    print("LOSS FINITE? ", jnp.isfinite(loss_val))
+    g = grad(loss)(thickness, problem1, max_time=1e-3)
+    print("Gradient: ", g)
+
+    print("Gradient finite? ", jnp.all(jnp.isfinite(g)))
+        
+
+    ### jax code that shows where nans first appear
+    #checked_loss = checkify.checkify(grad(loss))
+
+    #errors, out = checked_loss(thickness, problem1, max_time=1e-3)
+    #print("Output:", out)
+    #print("Errors:", errors.get())
+
+    fig, ax = plt.subplots()
+    ax.plot(problem1.get_nodes(), problem1.get_solution(), 'ko')
+    ax.set_xlabel(r'$x$')
+    ax.set_ylabel(r'displacement')
+    plt.show()
+
+    '''
+
+    # Check loss and its gradient are finite
+    #loss_val = loss(thickness, problem1, max_time=1e-3)
+    #print("Loss:", loss_val)
+    #print("Loss finite?", jnp.isfinite(loss_val))
+
+    #grads = jax.grad(loss)(thickness, problem1, max_time=1e-3)
+    #print("Grads:", grads)
+    #print("Grads finite?", jax.tree_util.tree_all(jax.tree_map(jnp.isfinite, grads)))
