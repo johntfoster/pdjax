@@ -205,6 +205,11 @@ def init_problem(bar_length: float = 20.0,
 
     return params, state
 
+@jax.jit
+def my_where(x: jax.Array):
+    return [i if i >= 1E-12 else 1E-12 for i in x]
+
+
 def compute_partial_volumes(params, thickness:jax.Array):
 
     # Setup some local (to function) convenience variables
@@ -262,8 +267,24 @@ def compute_partial_volumes(params, thickness:jax.Array):
 
     return (vol_state, rev_vol_state)
 
-#@jax.jit(static_argnums=4)  
+
+### to wrap jnp.where to try to get rid of nans in grad
+def safe_divide(num, denom, eps=1e-12):
+    denom_safe = jnp.where(jnp.abs(denom) < eps, 1.0, denom)
+    return num / denom_safe
+
+# A safe division function that uses jax.lax.cond to avoid division by zero
+def safe_unit(def_state, def_mag_state):
+    def true_fn(args):
+        def_state, def_mag_state = args
+        return def_state / def_mag_state
+    def false_fn(args):
+        def_state, def_mag_state = args
+        return 0.0
+    return jax.lax.cond(def_mag_state > 1e-12, true_fn, false_fn, (def_state, def_mag_state))
+
 # Compute the force vector-state using a LPS peridynamic formulation
+@partial(jit, static_argnums=(4,))
 def compute_force_state_LPS(params,
                             disp:jax.Array, 
                             vol_state:jax.Array,
@@ -281,11 +302,9 @@ def compute_force_state_LPS(params,
     undamaged_influence_state_left = params.undamaged_influence_state_left
     undamaged_influence_state_right = params.undamaged_influence_state_right
 
-
-    #disp = jnp.ones_like(params.pd_nodes)*0.001
-    disp = 0.001 
-
-    jax.debug.print("disp: {d}", d=disp)
+    #disp = 0.001
+    disp =  disp[0]
+    #jnp.zeros_like(ref_pos)
 
     #Compute the deformed positions of the nodes
     def_pos = ref_pos + disp
@@ -299,15 +318,25 @@ def compute_force_state_LPS(params,
     
     # Compute deformation magnitude state
     def_mag_state = jnp.sqrt(def_state * def_state)
-
+    #def_mag_state = jnp.linalg.norm(def_state, axis=-1)
+    #jax.debug.print("[def_mag_state] any<=0? {a} min={m} max={M}",
+                #a=~jnp.all(def_mag_state > 0), m=jnp.min(def_mag_state), M=jnp.max(def_mag_state))
+    #jax.debug.print("def_mag_state? {z}", z=jnp.any(def_mag_state == 0))
 
     # Compute deformation unit state
-    def_unit_state = jnp.where(def_mag_state > 1.0e-16, def_state / def_mag_state, 0.0)
+    #def_unit_state = my_where(def_mag_state)
+    def_unit_state = jnp.where(def_mag_state > 1.0e-12, def_state / def_mag_state, 0.0)
+
+    #def_unit_state = jax.vmap(safe_unit)(def_state, def_mag_state)
+
 
     # Compute scalar extension state
     exten_state = def_mag_state - ref_mag_state
+    #jax.debug.print("[exten_state] finite={f} min={m} max={M}",
+                #f=jnp.all(jnp.isfinite(exten_state)), m=jnp.min(exten_state), M=jnp.max(exten_state))
 
     stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
+
 
     def damage_branch(inf_state):
         inf_state = jnp.where(stretch > critical_stretch, 0.0, inf_state)
@@ -323,9 +352,14 @@ def compute_force_state_LPS(params,
     # Apply a critical strech fracture criteria
     inf_state = lax.cond(allow_damage, damage_branch, no_damage_branch, inf_state)
 
-    eps = 1e-12  # or smaller if your scale is tiny
+    #jax.debug.print("[inf_state pre-eps] any==0? {z} finite={f}",
+                #z=jnp.any(inf_state == 0.0), f=jnp.all(jnp.isfinite(inf_state)))
+
+    eps = 1e-10  # or smaller if your scale is tiny
 
     inf_state = jnp.where(inf_state == 0.0, eps, inf_state)
+    #jax.debug.print("[inf_state post-eps] min={m} max={M}",
+                    #m=jnp.min(inf_state), M=jnp.max(inf_state))
 
     ref_pos_state = jnp.where(ref_pos_state == 0.0, eps, ref_pos_state)
     #jax.debug.print("ref_pos_state zeros? {z}", z=jnp.any(ref_pos_state == 0))
@@ -337,17 +371,15 @@ def compute_force_state_LPS(params,
     shape_tens = (inf_state * ref_pos_state * ref_pos_state * vol_state).sum(axis=1)
     shape_tens = jnp.where(jnp.abs(shape_tens) < epsilon, epsilon, shape_tens)
 
-
     # Compute scalar force state for a elastic constitutive model
     ######### compute strain energy density here?  or calculation at least should look like this line here ########
-    scalar_force_state = 9.0 * K / shape_tens[:, None] * exten_state
+    #scalar_force_state = 9.0 * K / shape_tens[:, None] * exten_state
+    scalar_force_state = 9.0 * K * safe_divide(exten_state, shape_tens[:, None])
 
     # bond strain energy calc
-    bond_strain_energy = 9.0 * K / shape_tens[:, None] * exten_state * exten_state * ref_mag_state
+    #bond_strain_energy = 9.0 * K / shape_tens[:, None] * exten_state * exten_state * ref_mag_state
+    bond_strain_energy = 9.0 * K * safe_divide(exten_state**2 * ref_mag_state, shape_tens[:, None])
 
-    #jax.debug.print("bond_strain_energy: {bse}", bse=bond_strain_energy)
-
-    
     # Compute the force state
     force_state = inf_state * scalar_force_state * def_unit_state
 
@@ -412,15 +444,20 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
     if prescribed_force is not None:
         li = 0
         ri = num_nodes - 1
-        ramp_force = smooth_ramp(time, t0=1.e-5, c=prescribed_force) 
-
-        eps = 1e-12  # or smaller if your scale is tiny
+        #ramp_force = smooth_ramp(time, t0=1.e-5, c=prescribed_force) 
+        ramp_force = smooth_ramp(time, t0=1.e-3, c=prescribed_force) 
 
         denom_left  = vol_state[li].sum() + rev_vol_state[li][0]
-        denom_left  = jnp.where(denom_left == 0.0, eps, denom_left)
-
         denom_right = vol_state[ri].sum() + rev_vol_state[ri][0]
-        denom_right = jnp.where(denom_right == 0.0, eps, denom_right)
+
+
+
+        eps = 1e-12
+        #denom_left  = jnp.where(jnp.abs(denom_left)  < eps, eps, denom_left)
+        #denom_right = jnp.where(jnp.abs(denom_right) < eps, eps, denom_right)
+
+        denom_left  = jnp.clip(denom_left,  1e-8, jnp.inf)
+        denom_right = jnp.clip(denom_right, 1e-8, jnp.inf)
 
 
         # Compute the left boundary condition nodal forces
@@ -442,7 +479,6 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
         # For the rightmost node (if needed)
         right_bc_area_ri = width * thickness[ri]
         force = force.at[ri].add(-ramp_force * right_bc_area_ri)
-
 
     return force, inf_state, strain_energy
 
@@ -486,20 +522,14 @@ def solve_one_step(params, vals, allow_damage:bool):
 
     force, inf_state, strain_energy = compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, thickness, time, allow_damage)
 
-
-    #jax.debug.print("force: {d}", d=force)
-    #jax.debug.print("force? {z}", z=jnp.any(force == 0))
-
-
-    #force = jnp.ones_like(disp)
-    #strain_energy = 1.0
-
     acc_new = force / rho
 
     vel = vel.at[:].add(0.5 * (acc + acc_new) * time_step)
 
     disp = disp.at[:].add(vel * time_step + (0.5 * acc_new * time_step * time_step))
     acc = acc.at[:].set(acc_new)
+
+    #jax.debug.print("disp in solve_one_step: {d}", d=disp)
 
     strain_energy_total = jnp.sum(strain_energy)
     #jax.debug.print("strain_energy_total in solve: {s}", s=strain_energy_total)
@@ -524,7 +554,7 @@ def solve_one_step(params, vals, allow_damage:bool):
 
     return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_total, time + time_step)
 
-
+### put wrapper on solve
 @partial(jax.jit, static_argnums=(3,4))
 def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float=1.0):
     '''
@@ -533,7 +563,7 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
 
     EPS = 1.0e-12  # Minimum safe volume to avoid NaNs
 
-    time_step = 1.0e-6
+    time_step = 1.0e-7
     num_steps = int(max_time / time_step)
 
     vol_state, rev_vol_state = compute_partial_volumes(params, thickness)
@@ -555,7 +585,7 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
 
     #jax.debug.print("inf_state update after where: {i}",i=inf_state)
     # The fields
-    disp = jnp.zeros_like(params.pd_nodes)
+    disp = jnp.ones_like(params.pd_nodes) * 0.0001
     vel = jnp.zeros_like(params.pd_nodes)
     acc = jnp.zeros_like(params.pd_nodes)
     time = 0.0
@@ -598,6 +628,7 @@ def loss(params, state, thickness_vector:jax.Array, allow_damage:bool, max_time:
 
 
     output_vals = _solve(params, state, thickness=thickness_vector, allow_damage=allow_damage, max_time=max_time)
+    #output_vals = _solve_debug(params, state, thickness0, allow_damage, max_time=max_time)
 
 
     checkify.check(jnp.all(jnp.isfinite(solution[0])), "NaN in solution")
@@ -619,7 +650,6 @@ def loss(params, state, thickness_vector:jax.Array, allow_damage:bool, max_time:
     loss_value = total_strain_energy
     
     return loss_value
-
 
 ### Main Program ####
 if __name__ == "__main__":
@@ -646,15 +676,17 @@ if __name__ == "__main__":
                                  number_of_elements=int(fixed_length / delta_x),
                                  horizon=fixed_horizon,
                                  thickness=thickness,
-                                 prescribed_force=1.0e12,
+                                 prescribed_force=1.0e7,
                                  critical_stretch=critical_stretch)
     max_time = 1E-3
+    #max_time = 1E-6
     max_time = float(max_time)
 
 
     thickness0 = ensure_thickness_vector(thickness, params.num_nodes)
 
     results = _solve(params, state, thickness0, allow_damage, max_time=float(max_time))
+    #results = _solve_debug(params, state, thickness0, allow_damage, max_time=max_time)
 
     #results = _solve(params, state, params.thickness, allow_damage, max_time=max_time)
 
@@ -748,5 +780,5 @@ if __name__ == "__main__":
         #if step % 20 == 0:
             ##print(f"Step {step}, loss: {loss_val}")
             #print(f"Step {step}, loss: {loss_val}, param: {param}")
-    
+
 
