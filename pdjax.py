@@ -205,9 +205,59 @@ def init_problem(bar_length: float = 20.0,
 
     return params, state
 
+
+############### global functions to replace jnp.where functions in compute_partial_volumes ###############
 @jax.jit
-def my_where(x: jax.Array):
-    return [i if i >= 1E-12 else 1E-12 for i in x]
+def vol_state_uncorrected_where(ref_mag_state: jax.Array, vol_state_uncorrected: jax.Array):
+    # Replace entries in vol_state_uncorrected with 0.0 where ref_mag_state < 1.0e-16
+    def cond_fn(ref_val, vol_val):
+        return jax.lax.cond(ref_val < 1.0e-16, lambda _: 0.0, lambda _: vol_val, operand=None)
+    return jnp.vectorize(cond_fn)(ref_mag_state, vol_state_uncorrected)
+
+@jax.jit
+def vol_state_where(ref_mag_state: jax.Array, horiz: float, lens: jax.Array, neigh: jax.Array, vol_state_uncorrected: jax.Array):
+    # Replace entries in vol_state_uncorrected with 0.0 where ref_mag_state >= horiz + lens[neigh] / 2.0
+    threshold = horiz + lens[neigh] / 2.0
+    def cond_fn(ref_val, thresh, vol_val):
+        return jax.lax.cond(ref_val < thresh, lambda _: vol_val, lambda _: 0.0, operand=None)
+    return jnp.vectorize(cond_fn)(ref_mag_state, threshold, vol_state_uncorrected)
+
+
+@jax.jit
+def vol_state_partial_where(is_partial_volume_case1: jax.Array, is_partial_volume_case2: jax.Array,
+                           lens: jax.Array, neigh: jax.Array, ref_mag_state: jax.Array, horiz: float,
+                           width: float, thickness: jax.Array, vol_state: jax.Array):
+    # Replace vol_state using lax.cond for both partial volume cases
+    def cond_fn(case1, case2, l, n, r, v):
+        val1 = (l / 2.0 - (r - horiz)) * width * thickness[n]
+        val2 = (l / 2.0 + (horiz - r)) * width * thickness[n]
+        return jax.lax.cond(case1, lambda _: val1,
+                            lambda _: jax.lax.cond(case2, lambda _: val2, lambda _: v, operand=None),
+                            operand=None)
+    return jnp.vectorize(cond_fn)(is_partial_volume_case1, is_partial_volume_case2, lens[neigh], neigh, ref_mag_state, vol_state)
+
+@jax.jit
+def vol_state_clip_where(vol_state: jax.Array, vol_state_uncorrected: jax.Array):
+    # Replace vol_state with vol_state_uncorrected where vol_state > vol_state_uncorrected
+    def cond_fn(v, vu):
+        return jax.lax.cond(v > vu, lambda _: vu, lambda _: v, operand=None)
+    return jnp.vectorize(cond_fn)(vol_state, vol_state_uncorrected)
+
+@jax.jit
+def rev_vol_state_partial_where(is_partial_volume_case1: jax.Array, is_partial_volume_case2: jax.Array,
+                               lens: jax.Array, ref_mag_state: jax.Array, horiz: float,
+                               width: float, thickness: jax.Array, rev_vol_state: jax.Array):
+    # Vectorized conditional update for reverse volume state
+    def cond_fn(case1, case2, l, r, t, v):
+        val1 = (l / 2.0 - (r - horiz)) * width * t
+        val2 = (l / 2.0 + (horiz - r)) * width * t
+        return jax.lax.cond(case1, lambda _: val1,
+                            lambda _: jax.lax.cond(case2, lambda _: val2, lambda _: v, operand=None),
+                            operand=None)
+    # lens, ref_mag_state, thickness, rev_vol_state are all shape (N, M)
+    return jnp.vectorize(cond_fn)(is_partial_volume_case1, is_partial_volume_case2, lens, ref_mag_state, thickness, rev_vol_state)
+
+######################################################################################
 
 
 def compute_partial_volumes(params, thickness:jax.Array):
@@ -223,13 +273,13 @@ def compute_partial_volumes(params, thickness:jax.Array):
     width = params.width
     vol_state_uncorrected = lens[neigh] * thickness[neigh] * width 
 
-
     #Zero out entries that are not in the family
-    vol_state_uncorrected = jnp.where(ref_mag_state < 1.0e-16, 0.0, vol_state_uncorrected) 
+    #vol_state_uncorrected = jnp.where(ref_mag_state < 1.0e-16, 0.0, vol_state_uncorrected) 
+    vol_state_uncorrected = vol_state_uncorrected_where(ref_mag_state, vol_state_uncorrected)
 
 
-    vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
-    #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(vol_state)))
+    #vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
+    vol_state = vol_state_where(ref_mag_state, horiz, lens, neigh, vol_state_uncorrected)  
 
     # Check to see if the neighboring node has a partial volume
     is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
@@ -240,11 +290,14 @@ def compute_partial_volumes(params, thickness:jax.Array):
     is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
 
     # Compute the partial volumes conditionally
-    vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[neigh], vol_state)
-    vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness[neigh], vol_state)
+    #vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[neigh], vol_state)
+    #vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness[neigh], vol_state)
+    vol_state = vol_state_partial_where(is_partial_volume_case1, is_partial_volume_case2, lens, neigh, ref_mag_state, horiz, width, thickness, vol_state)
+
 
     # If the partial volume is predicted to be larger than the unocrrected volume, set it back
-    vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
+    #vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
+    vol_state = vol_state_clip_where(vol_state, vol_state_uncorrected)
 
     # Now compute the "reverse volume state", this is the partial volume of the "source" node, i.e. node i,
     # as seen from node j.  This doesn't show up anywhere in any papers, it's just used here for computational
@@ -255,33 +308,65 @@ def compute_partial_volumes(params, thickness:jax.Array):
     rev_vol_state = jnp.ones_like(vol_state) * vol_array
     #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
     
-    rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * width * thickness[:, None], rev_vol_state)
-    #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
-    
-    rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * width * thickness[:, None], rev_vol_state)
-    #jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
-    
+    #rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * width * thickness[:, None], rev_vol_state)
+    #rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * width * thickness[:, None], rev_vol_state)
+    rev_vol_state = rev_vol_state_partial_where(is_partial_volume_case1, is_partial_volume_case2, lens[:, None],
+                                     ref_mag_state, horiz, width, thickness[:, None], rev_vol_state)
+
+
     #If the partial volume is predicted to be larger than the uncorrected volume, set it back
-    rev_vol_state = jnp.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
+    #rev_vol_state = jnp.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
+    rev_vol_state = vol_state_clip_where(rev_vol_state, vol_array)
 
 
     return (vol_state, rev_vol_state)
 
+'''
+@jax.jit
+def my_where(x: jax.Array):
+    # Elementwise comparison without jnp.where, using list comprehension
+    return jnp.array([i if i >= 1E-12 else 1E-12 for i in x])
+'''
+
+###### functions to replace jnp.where with lax.cond for vectorized operations ######
+@jax.jit
+def my_where(x: jax.Array):
+    def cond_fn(i):
+        return jax.lax.cond(i >= 1E-12, lambda _: i, lambda _: 1E-12, operand=None)
+    return jnp.vectorize(cond_fn)(x)
+
+@jax.jit
+def my_stretch_where(ref_mag_state: jax.Array, exten_state: jax.Array):
+    def cond_fn(r, e):
+        return jax.lax.cond(r > 1.0e-16, lambda _: e / r, lambda _: 0.0, operand=None)
+    return jnp.vectorize(cond_fn)(ref_mag_state, exten_state)
+
+@jax.jit
+def inf_state_where(inf_state: jax.Array, stretch: jax.Array, critical_stretch: float):
+    def cond_fn(stretch, inf_state):
+        return jax.lax.cond(stretch > critical_stretch, lambda _: 0.0, lambda _: inf_state, operand=None)
+    return jnp.vectorize(cond_fn)(stretch, inf_state)
+
+@jax.jit
+def my_replace_zero_val_where(x_array: jax.Array, eps: float):
+    def cond_fn(i):
+        return jax.lax.cond(i == 0.0, lambda _: eps, lambda _: i, operand=None)
+    return jnp.vectorize(cond_fn)(x_array)
+
+@jax.jit
+def shape_tens_eps_where(shape_tens: jax.Array, epsilon: float):
+    def cond_fn(val):
+        return jax.lax.cond(jnp.abs(val) < epsilon, lambda _: epsilon, lambda _: val, operand=None)
+    return jnp.vectorize(cond_fn)(shape_tens)
 
 ### to wrap jnp.where to try to get rid of nans in grad
+@jax.jit
 def safe_divide(num, denom, eps=1e-12):
-    denom_safe = jnp.where(jnp.abs(denom) < eps, 1.0, denom)
+    def cond_fn(d):
+        return jax.lax.cond(jnp.abs(d) < eps, lambda _: 1.0, lambda _: d, operand=None)
+    denom_safe = jnp.vectorize(cond_fn)(denom)
     return num / denom_safe
-
-# A safe division function that uses jax.lax.cond to avoid division by zero
-def safe_unit(def_state, def_mag_state):
-    def true_fn(args):
-        def_state, def_mag_state = args
-        return def_state / def_mag_state
-    def false_fn(args):
-        def_state, def_mag_state = args
-        return 0.0
-    return jax.lax.cond(def_mag_state > 1e-12, true_fn, false_fn, (def_state, def_mag_state))
+###########################
 
 # Compute the force vector-state using a LPS peridynamic formulation
 @partial(jit, static_argnums=(4,))
@@ -303,7 +388,7 @@ def compute_force_state_LPS(params,
     undamaged_influence_state_right = params.undamaged_influence_state_right
 
     #disp = 0.001
-    disp =  disp[0]
+    #disp =  disp[0]
     #jnp.zeros_like(ref_pos)
 
     #Compute the deformed positions of the nodes
@@ -324,8 +409,8 @@ def compute_force_state_LPS(params,
     #jax.debug.print("def_mag_state? {z}", z=jnp.any(def_mag_state == 0))
 
     # Compute deformation unit state
-    #def_unit_state = my_where(def_mag_state)
-    def_unit_state = jnp.where(def_mag_state > 1.0e-12, def_state / def_mag_state, 0.0)
+    #def_unit_state = jnp.where(def_mag_state > 1.0e-12, def_state / def_mag_state, 0.0)
+    def_unit_state = my_stretch_where(def_mag_state, def_state)
 
     #def_unit_state = jax.vmap(safe_unit)(def_state, def_mag_state)
 
@@ -335,11 +420,13 @@ def compute_force_state_LPS(params,
     #jax.debug.print("[exten_state] finite={f} min={m} max={M}",
                 #f=jnp.all(jnp.isfinite(exten_state)), m=jnp.min(exten_state), M=jnp.max(exten_state))
 
-    stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
+    #stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
+    stretch = my_stretch_where(ref_mag_state, exten_state)
 
 
     def damage_branch(inf_state):
-        inf_state = jnp.where(stretch > critical_stretch, 0.0, inf_state)
+        #inf_state = jnp.where(stretch > critical_stretch, 0.0, inf_state)
+        inf_state = inf_state_where(inf_state, stretch, critical_stretch)
         inf_state = inf_state.at[no_damage_region_left, :].set(undamaged_influence_state_left)
         inf_state = inf_state.at[no_damage_region_right, :].set(undamaged_influence_state_right)
         return inf_state
@@ -357,11 +444,11 @@ def compute_force_state_LPS(params,
 
     eps = 1e-10  # or smaller if your scale is tiny
 
-    inf_state = jnp.where(inf_state == 0.0, eps, inf_state)
-    #jax.debug.print("[inf_state post-eps] min={m} max={M}",
-                    #m=jnp.min(inf_state), M=jnp.max(inf_state))
+    #inf_state = jnp.where(inf_state == 0.0, eps, inf_state)
+    inf_state = my_replace_zero_val_where(inf_state, eps)
 
-    ref_pos_state = jnp.where(ref_pos_state == 0.0, eps, ref_pos_state)
+    #ref_pos_state = jnp.where(ref_pos_state == 0.0, eps, ref_pos_state)
+    ref_pos_state = my_replace_zero_val_where(ref_pos_state, eps) 
     #jax.debug.print("ref_pos_state zeros? {z}", z=jnp.any(ref_pos_state == 0))
     
     # Compute the shape tensor (really a scalar because this is 1d), i.e. the "weighted volume" as 
@@ -369,7 +456,9 @@ def compute_force_state_LPS(params,
     # added epsilon to prevent dividing by zero
     epsilon = 1e-8
     shape_tens = (inf_state * ref_pos_state * ref_pos_state * vol_state).sum(axis=1)
-    shape_tens = jnp.where(jnp.abs(shape_tens) < epsilon, epsilon, shape_tens)
+    #shape_tens = jnp.where(jnp.abs(shape_tens) < epsilon, epsilon, shape_tens)
+    shape_tens = shape_tens_eps_where(shape_tens, epsilon)
+    
 
     # Compute scalar force state for a elastic constitutive model
     ######### compute strain energy density here?  or calculation at least should look like this line here ########
@@ -414,6 +503,7 @@ def smooth_ramp(t, t0, c=1.0, beta=5.0):
 
 # Internal force calculation
 #@jax.jit(static_argnums=7)  
+@partial(jax.jit, static_argnums=(7))
 def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, thickness, time, allow_damage):
 
         
@@ -482,7 +572,7 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
 
     return force, inf_state, strain_energy
 
-
+@partial(jax.jit, static_argnums=(2,))
 def solve_one_step(params, vals, allow_damage:bool):
 
     (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy, time) = vals
@@ -555,7 +645,7 @@ def solve_one_step(params, vals, allow_damage:bool):
     return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_total, time + time_step)
 
 ### put wrapper on solve
-@partial(jax.jit, static_argnums=(3,4))
+#@partial(jax.jit, static_argnums=(3,4))
 def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float=1.0):
     '''
         Solves in time using Verlet-Velocity
@@ -585,7 +675,7 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
 
     #jax.debug.print("inf_state update after where: {i}",i=inf_state)
     # The fields
-    disp = jnp.ones_like(params.pd_nodes) * 0.0001
+    disp = jnp.ones_like(params.pd_nodes) * 0.001
     vel = jnp.zeros_like(params.pd_nodes)
     acc = jnp.zeros_like(params.pd_nodes)
     time = 0.0
@@ -631,7 +721,7 @@ def loss(params, state, thickness_vector:jax.Array, allow_damage:bool, max_time:
     #output_vals = _solve_debug(params, state, thickness0, allow_damage, max_time=max_time)
 
 
-    checkify.check(jnp.all(jnp.isfinite(solution[0])), "NaN in solution")
+    checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
 
     jax.debug.print("strain energy : {s}", s=output_vals[7])
 
