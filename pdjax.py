@@ -320,6 +320,9 @@ def compute_partial_volumes(params, thickness:jax.Array):
 	# If the partial volume is predicted to be larger than the unocrrected volume, set it back
 	#vol_state = jnp.where(vol_state > vol_state_uncorrected, vol_state_uncorrected, vol_state)
 	vol_state = vol_state_clip_where(vol_state, vol_state_uncorrected)
+	EPS_vol = 1e-6
+	vol_state = jnp.maximum(vol_state, EPS_vol)
+
 
 	# Now compute the "reverse volume state", this is the partial volume of the "source" node, i.e. node i,
 	# as seen from node j.  This doesn't show up anywhere in any papers, it's just used here for computational
@@ -338,7 +341,7 @@ def compute_partial_volumes(params, thickness:jax.Array):
 	#If the partial volume is predicted to be larger than the uncorrected volume, set it back
 	#rev_vol_state = jnp.where(rev_vol_state > vol_array, vol_array, rev_vol_state)
 	rev_vol_state = vol_state_clip_where(rev_vol_state, vol_array)
-
+	rev_vol_state = jnp.maximum(rev_vol_state, EPS_vol)
 
 	return (vol_state, rev_vol_state)
 
@@ -358,10 +361,10 @@ def my_where(x: jax.Array):
 
 @jax.jit
 def my_stretch_where(ref_mag_state, exten_state):
-	def cond_fn(r, e):
-		return jax.lax.cond(r > 1e-16, lambda _: e / r, lambda _: 0.0, operand=None)
-	# For 2D array, nest vmaps: first over rows, then over columns
-	return jax.vmap(lambda row_r, row_e: jax.vmap(cond_fn)(row_r, row_e))(ref_mag_state, exten_state)
+    # r, e both shape (num_nodes, num_neighbors)
+	
+    return jnp.where(ref_mag_state > 1e-16, exten_state / ref_mag_state, 0.0)
+
 
 @jax.jit
 def inf_state_where(inf_state: jax.Array, stretch: jax.Array, critical_stretch: float):
@@ -453,21 +456,26 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 
 	
 	# Compute deformation magnitude state
-	def_mag_state = jnp.sqrt(def_state * def_state)
-	#def_mag_state = jnp.linalg.norm(def_state, axis=-1)
+	#def_mag_state = jnp.sqrt(def_state * def_state)
+	def_mag_state = jnp.linalg.norm(def_state, axis=-1)
+	#def_mag_state = jnp.linalg.norm(def_state,axis=0)
 	#jax.debug.print("[def_mag_state] any<=0? {a} min={m} max={M}",
 				#a=~jnp.all(def_mag_state > 0), m=jnp.min(def_mag_state), M=jnp.max(def_mag_state))
 	#jax.debug.print("def_mag_state? {z}", z=jnp.any(def_mag_state == 0))
 
 	# Compute deformation unit state
+	eps = 1e-10
 	#def_unit_state = jnp.where(def_mag_state > 1.0e-12, def_state / def_mag_state, 0.0)
-	def_unit_state = my_stretch_where(def_mag_state, def_state)
-
+	#def_unit_state = my_stretch_where(def_mag_state[..., None], def_state)
+	def_unit_state = jnp.where(def_mag_state[..., None] > eps,
+							def_state / def_mag_state[..., None],
+							0.0)
 	#def_unit_state = jax.vmap(safe_unit)(def_state, def_mag_state)
 
 
 	# Compute scalar extension state
-	exten_state = def_mag_state - ref_mag_state
+	exten_state = def_mag_state[:, None] - ref_mag_state
+	#exten_state = def_mag_state - ref_mag_state
 	#jax.debug.print("[exten_state] finite={f} min={m} max={M}",
 				#f=jnp.all(jnp.isfinite(exten_state)), m=jnp.min(exten_state), M=jnp.max(exten_state))
 
@@ -508,7 +516,8 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	epsilon = 1e-8
 	shape_tens = (inf_state * ref_pos_state * ref_pos_state * vol_state).sum(axis=1)
 	#shape_tens = jnp.where(jnp.abs(shape_tens) < epsilon, epsilon, shape_tens)
-	shape_tens = shape_tens_eps_where(shape_tens, epsilon)
+	#shape_tens = shape_tens_eps_where(shape_tens, epsilon)
+	shape_tens = jnp.maximum(shape_tens, epsilon)
 	
 
 	# Compute scalar force state for a elastic constitutive model
@@ -597,8 +606,8 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
 		#denom_left  = jnp.where(jnp.abs(denom_left)  < eps, eps, denom_left)
 		#denom_right = jnp.where(jnp.abs(denom_right) < eps, eps, denom_right)
 
-		denom_left  = jnp.clip(denom_left,  1e-8, jnp.inf)
-		denom_right = jnp.clip(denom_right, 1e-8, jnp.inf)
+		denom_left  = jnp.clip(denom_left,  1e-3, jnp.inf)
+		denom_right = jnp.clip(denom_right, 1e-3, jnp.inf)
 
 
 		# Compute the left boundary condition nodal forces
@@ -724,7 +733,7 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
 
 	#jax.debug.print("inf_state update after where: {i}",i=inf_state)
 	# The fields
-	disp = jnp.ones_like(params.pd_nodes) * 0.001
+	disp = jnp.zeros_like(params.pd_nodes)
 	vel = jnp.zeros_like(params.pd_nodes)
 	acc = jnp.zeros_like(params.pd_nodes)
 	time = 0.0
