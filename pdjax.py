@@ -679,7 +679,11 @@ def solve_one_step(params, vals, allow_damage:bool):
 
 	#jax.debug.print("disp in solve_one_step: {d}", d=disp)
 
+	### calculating strain energy density
 	strain_energy_total = jnp.sum(strain_energy)
+	total_volume = jnp.sum(vol_state)
+	strain_energy_density = strain_energy_total / total_volume
+
 	#jax.debug.print("strain_energy_total in solve: {s}", s=strain_energy_total)
 
 	def nan_debug_print(x):
@@ -700,7 +704,7 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#jax.debug.print("disp: {d}", d=disp)
 	#jax.debug.print("disp? {z}", z=jnp.any(disp == 0))
 
-	return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_total, time + time_step)
+	return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy_density, time + time_step)
 
 ### put wrapper on solve
 #@partial(jax.jit, static_argnums=(3,4))
@@ -771,16 +775,16 @@ def loss(params, state, thickness_vector:jax.Array, allow_damage:bool, max_time:
 
 	checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
 
-	jax.debug.print("strain energy : {s}", s=output_vals[7])
+	#jax.debug.print("strain energy : {s}", s=output_vals[7])
 
-	strain_energy = output_vals[7]
+	strain_energy_density = output_vals[7]
 
-	normalization_factor = 1
+	normalization_factor = 1E9
 
-	total_strain_energy = strain_energy / normalization_factor
+	total_strain_energy = strain_energy_density / normalization_factor
 
 	#jax.debug.print("vals[0]: {t}", t=output_vals[0])
-	jax.debug.print("total strain energy: {s}", s=total_strain_energy)
+	#jax.debug.print("total strain energy: {s}", s=total_strain_energy)
 	#jax.debug.print("vol_state: {t}", t=vol_state)
 
 	#loss_value = total_strain_energy + 0.001 * jnp.sum(raw_thickness)
@@ -816,7 +820,7 @@ if __name__ == "__main__":
         thickness=thickness,
         prescribed_force=1.0e7,
         critical_stretch=critical_stretch)
-
+	
     max_time = 1E-3
     max_time = float(max_time)
 
@@ -825,16 +829,18 @@ if __name__ == "__main__":
     results = _solve(params, state, thickness0, allow_damage, max_time=float(max_time))
 
     ##################################################
-    # Now using Optax to maximize
+	# # Now using Optax to maximize
     key = jax.random.PRNGKey(0)  # Seed for reproducibility
+    shape = (params.num_nodes,)  # Example shape
+    param = jax.random.uniform(key, shape=shape, minval=1.0, maxval=3.0)
+    #param = jnp.full((params.num_nodes,), 2.5)
+	
+    loss_to_plot = []
+    total_vol_state_to_plot = []
 
-    minval = 1.00
-    maxval = 2.0
-
-    param = jnp.full((params.num_nodes,), 1.0)
-
-    learning_rate = 1E-2
-    num_steps = 3
+    learning_rate = 1E-1
+    #num_steps = 10
+    num_steps = 500
 
     thickness_min = 1.0E-2
     thickness_max = 1.0E2
@@ -855,10 +861,10 @@ if __name__ == "__main__":
     # Clamp function
     def clamp_params(grads):
         lower = 1E-05
-        upper = 1.0E2
-        jax.debug.print("entering clamp_params: {t}", t=grads)
-        grads = jax.tree_util.tree_map(lambda x: jnp.clip(x, lower, upper), grads)
-        jax.debug.print("grad after clamping: {t}", t=grads)
+        upper = 1.0E10
+        #jax.debug.print("entering clamp_params: {t}", t=grads)
+        grads = jax.tree_util.tree_map(lambda x: jnp.clip(jnp.abs(x), lower, upper), grads)
+        #jax.debug.print("grad after clamping: {t}", t=grads)
         return grads
 
     # Optimization loop
@@ -871,25 +877,36 @@ if __name__ == "__main__":
             jax.debug.print("Non-finite thickness detected: {t}", t=thickness)
             return thickness
 
-        jax.debug.print("Initial thickness: {t}", t=param)
+        #jax.debug.print("Initial thickness: {t}", t=param)
         assert jnp.all(jnp.isfinite(param)), "Initial thickness contains NaNs!"
 
         loss_val, grads = loss_and_grad(params, state, param, allow_damage=allow_damage, max_time=max_time)
 
         # Calling clamp function to restrict gradient
-        grads = clamp_params(grads)
+        #grads = clamp_params(grads)
 
         jax.debug.print(
-            "Step {step}, loss: {loss}, thickness: {thickness}, grads: {grads}",
-            step=step, loss=loss_val, thickness=param, grads=grads
+            "Step {step}, loss: {loss}, thickness: {thickness}",
+            step=step, loss=loss_val, thickness=param
         )
 
         updates, opt_state = optimizer.update(grads, opt_state, param)
         param = optax.apply_updates(param, updates)
+        loss_to_plot.append(loss_val)
+        total_vol_state = _solve(params, state, param, allow_damage, max_time)[3].sum()
+        total_vol_state_to_plot.append(total_vol_state)
 		##print(f"Updated param: {param}")
 		#print("updated param: ", param)
 		#if step % 20 == 0:
 			##print(f"Step {step}, loss: {loss_val}")
 			#print(f"Step {step}, loss: {loss_val}, param: {param}")
-
-
+'''
+plt.figure(figsize=(6,4))
+plt.plot(total_vol_state_to_plot, loss_to_plot, marker='o', linestyle='-')
+plt.xlabel("Total Volume State")
+plt.ylabel("Loss Value (Normalized Strain Energy)")
+plt.title("Loss vs Total Volume State")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+'''
