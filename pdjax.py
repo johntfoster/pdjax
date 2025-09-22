@@ -637,7 +637,7 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
 
 		# For the rightmost node (if needed)
 		right_bc_area_ri = width * thickness[ri]
-		force = force.at[ri].add(-ramp_force * right_bc_area_ri)
+		force = force.at[ri].add(ramp_force * right_bc_area_ri)
 
 	return force, inf_state, strain_energy
 
@@ -827,6 +827,15 @@ def zero_small_inf_state(inf_state: jax.Array, threshold: float = 1e-9) -> jax.A
     # Vectorize over rows
     return jax.vmap(row_fn, in_axes=0)(inf_state)
 
+@jax.jit
+def thickness_in_no_damage_region(thickness:jax.Array, no_damage_region_left:jax.Array, no_damage_region_right:jax.Array, min_thickness:float=5.0):
+    """
+    Set thickness to min_thickness in the no-damage regions.
+    """
+    thickness = thickness.at[no_damage_region_left].set(min_thickness)
+    thickness = thickness.at[no_damage_region_right].set(min_thickness)
+    return thickness
+
 def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state:jax.Array):
 	# returning small inf_state values to zero
 	inf_state = zero_small_inf_state(inf_state)
@@ -834,8 +843,10 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
 def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:bool, max_time:float):
-	thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
-	jax.debug.print("allow_damage: {a}", a=allow_damage)
+	#thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
+ 
+ 	# Thickness can't change in no_damage regions
+	thickness_vector = thickness_in_no_damage_region(thickness_vector, params.no_damage_region_left, params.no_damage_region_right)
 
 	output_vals = _solve(params, state, thickness=thickness_vector, allow_damage=allow_damage, max_time=max_time)
 	checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
@@ -893,7 +904,6 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:b
 	# Weighted combination, multi-objective
 	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor) 
 	
-	
 	return loss_value
 
 ### Main Program ####
@@ -901,11 +911,24 @@ if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
     delta_x = 0.25       # Element length
-    fixed_horizon = 2.6 * delta_x  # Horizon size
+    fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
-    critical_stretch = 1 #Critical stretch for damage, set to None for no damage, 1e-4
     num_elems = int(fixed_length/delta_x)
-
+    density = 7850.0
+    bulk_modulus = 150E9
+	#prescribed_velocity = 0.01  # Prescribed velocity at the boundaries
+    prescribed_force = 1E12
+    mode1_fracture_tough = 100.0  # Mode I fracture toughness in J/m^2
+    poisson_ratio = 0.3
+    #elastic_modulus = 3 * bulk_modulus * (1 - 2 * poisson_ratio) 
+    elastic_modulus = 200E9  # Pa, for steel
+    
+    # Compute critical stretch from fracture toughness as done in Silling and Askari 2005
+    # Now critical stretch changes w/ horizon, discretization, and material properties
+    critical_stretch = np.sqrt(5 * mode1_fracture_tough / (9 * bulk_modulus * fixed_horizon))
+    
+    # Generic Critical stretch for damage, set to None for no damage, 1e-4
+    #critical_stretch = 1E-04 
     allow_damage = True
 
     '''
@@ -925,25 +948,26 @@ if __name__ == "__main__":
     #shape = (num_elems,)  # Example shape
     #thickness = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.5)
 
-    #thickness = jnp.full((num_elems,), 1.0)
+    thickness = jnp.full((num_elems,), 1.0)
     #scalar_param = 0.5
     #hickness0 = scalar_param * jnp.ones(num_elems)
-    thickness =  1.0
+    #thickness =  1.0
     thickness0 = thickness 
     
 
     # Initialize the problem with fixed parameters
     params, state = init_problem(
         bar_length=fixed_length,
-        density=7850.0,
-        bulk_modulus=200E9,
+        density=density,
+        bulk_modulus=bulk_modulus,
         number_of_elements=int(fixed_length / delta_x),
         horizon=fixed_horizon,
         thickness=thickness,
-        prescribed_force=1.0e11,
+        prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
-    max_time = 8.0E-01
+    #max_time = 1e-02
+    max_time = 1e-03
     max_time = float(max_time)
 	
     #key = jax.random.PRNGKey(0)  # Seed for reproducibility
@@ -967,7 +991,7 @@ if __name__ == "__main__":
     plt.show()
     print("thickness: ",thickness)
     
- 
+
 ##################################################
 # # Now using Optax to maximize
 #key = jax.random.PRNGKey(np.random.randint(0, 1_000_000))  # Use a random seed each run
@@ -978,7 +1002,8 @@ if __name__ == "__main__":
 #shape = (params.num_nodes,)  # Example shape
 #param = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.5)
 # scalar param
-param = jnp.array([1.0])
+#param = jnp.array([1.0])
+param = jnp.full((num_elems,), 1.0)
 
 loss_to_plot = []
 total_vol_state_to_plot = []
@@ -988,7 +1013,7 @@ strain_energy_to_plot =[]
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 60
+num_steps = 10
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -997,6 +1022,7 @@ lower = 1E-2
 upper = 20
 
 max_time = 5.0E-03
+#max_time = 5.0E-02
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
@@ -1055,7 +1081,8 @@ for step in range(num_steps):
 	#if step % 20 == 0:
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
- 
+
+
 '''
 results = _solve(params, state, param, allow_damage, max_time=float(max_time))
 disp = results[0]
