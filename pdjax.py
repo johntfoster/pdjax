@@ -828,12 +828,13 @@ def zero_small_inf_state(inf_state: jax.Array, threshold: float = 1e-9) -> jax.A
     return jax.vmap(row_fn, in_axes=0)(inf_state)
 
 @jax.jit
-def thickness_in_no_damage_region(thickness:jax.Array, no_damage_region_left:jax.Array, no_damage_region_right:jax.Array, min_thickness:float=5.0):
+def thickness_in_no_damage_region(thickness:jax.Array, no_damage_region_left:jax.Array, no_damage_region_right:jax.Array, min_thickness:float):
     """
     Set thickness to min_thickness in the no-damage regions.
     """
     thickness = thickness.at[no_damage_region_left].set(min_thickness)
     thickness = thickness.at[no_damage_region_right].set(min_thickness)
+    jax.debug.print("thickness in no damage region: {t}", t=thickness)	
     return thickness
 
 def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state:jax.Array):
@@ -846,8 +847,10 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:b
 	#thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
  
  	# Thickness can't change in no_damage regions
-	thickness_vector = thickness_in_no_damage_region(thickness_vector, params.no_damage_region_left, params.no_damage_region_right)
+	min_thickness_no_damage = 5.0
+	#thickness_vector = thickness_in_no_damage_region(thickness_vector, params.no_damage_region_left, params.no_damage_region_right, min_thickness_no_damage)
 
+	
 	output_vals = _solve(params, state, thickness=thickness_vector, allow_damage=allow_damage, max_time=max_time)
 	checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
 
@@ -902,7 +905,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:b
 	#loss_value = jnp.sum(strain_energy_density / (thickness_vector + 1e-8))
 
 	# Weighted combination, multi-objective
-	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor) 
+	loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor) 
 	
 	return loss_value
 
@@ -914,21 +917,24 @@ if __name__ == "__main__":
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
-    density = 7850.0
-    bulk_modulus = 150E9
+	
+	# material properties selected for 304 stainless steel
+    density = 7930.0
+    elastic_modulus = 200E9
 	#prescribed_velocity = 0.01  # Prescribed velocity at the boundaries
     prescribed_force = 1E12
-    mode1_fracture_tough = 100.0  # Mode I fracture toughness in J/m^2
+    mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.3
-    #elastic_modulus = 3 * bulk_modulus * (1 - 2 * poisson_ratio) 
-    elastic_modulus = 200E9  # Pa, for steel
+    bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     
     # Compute critical stretch from fracture toughness as done in Silling and Askari 2005
-    # Now critical stretch changes w/ horizon, discretization, and material properties
+    # Now critical stretch adjusts based on horizon, discretization, and material properties
     critical_stretch = np.sqrt(5 * mode1_fracture_tough / (9 * bulk_modulus * fixed_horizon))
+    print("critical_stretch: ", critical_stretch)
     
-    # Generic Critical stretch for damage, set to None for no damage, 1e-4
-    #critical_stretch = 1E-04 
+    #Critical stretch for damage, set to None for no damage, 1e-4
+    critical_stretch = 1.0E1
+
     allow_damage = True
 
     '''
@@ -1013,7 +1019,7 @@ strain_energy_to_plot =[]
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 10
+num_steps = 30
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1071,6 +1077,11 @@ for step in range(num_steps):
 	param = jnp.abs(param)
 	min_thickness_allowed = 0.30
 	param = jnp.clip(param, min_thickness_allowed, None)
+	
+	min_thickness = 1.0
+	param = param.at[params.no_damage_region_left].set(min_thickness)
+	param = param.at[params.no_damage_region_right].set(min_thickness)
+
 
 	loss_to_plot.append(loss_val)
 	params_to_plot = param * jnp.ones(params.num_nodes)
