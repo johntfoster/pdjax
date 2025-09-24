@@ -844,7 +844,7 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
 def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:bool, max_time:float):
-	#thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
+	thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
  
  	# Thickness can't change in no_damage regions
 	min_thickness_no_damage = 5.0
@@ -905,7 +905,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:b
 	#loss_value = jnp.sum(strain_energy_density / (thickness_vector + 1e-8))
 
 	# Weighted combination, multi-objective
-	loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor) 
+	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor) 
 	
 	return loss_value
 
@@ -933,7 +933,8 @@ if __name__ == "__main__":
     print("critical_stretch: ", critical_stretch)
     
     #Critical stretch for damage, set to None for no damage, 1e-4
-    critical_stretch = 1.0E1
+    #critical_stretch = 1.0E1
+    #critical_stretch = 1.0E-04
 
     allow_damage = True
 
@@ -954,11 +955,11 @@ if __name__ == "__main__":
     #shape = (num_elems,)  # Example shape
     #thickness = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.5)
 
-    thickness = jnp.full((num_elems,), 1.0)
+    #thickness = jnp.full((num_elems,), 1.0)
     #scalar_param = 0.5
     #hickness0 = scalar_param * jnp.ones(num_elems)
     #thickness =  1.0
-    thickness0 = thickness 
+    thickness0 = jnp.array(1.0)
     
 
     # Initialize the problem with fixed parameters
@@ -973,7 +974,7 @@ if __name__ == "__main__":
         critical_stretch= critical_stretch)
 	
     #max_time = 1e-02
-    max_time = 1e-03
+    max_time = 5e-03
     max_time = float(max_time)
 	
     #key = jax.random.PRNGKey(0)  # Seed for reproducibility
@@ -1008,8 +1009,8 @@ if __name__ == "__main__":
 #shape = (params.num_nodes,)  # Example shape
 #param = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.5)
 # scalar param
-#param = jnp.array([1.0])
-param = jnp.full((num_elems,), 1.0)
+param = jnp.array([1.0])
+#param = jnp.full((num_elems,), 1.0)
 
 loss_to_plot = []
 total_vol_state_to_plot = []
@@ -1019,7 +1020,7 @@ strain_energy_to_plot =[]
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 30
+num_steps = 35
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1027,8 +1028,8 @@ thickness_max = 1.0E2
 lower = 1E-2
 upper = 20
 
-max_time = 5.0E-03
-#max_time = 5.0E-02
+max_time = 1.0E-03
+#max_time = 5.0E-03
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
@@ -1078,9 +1079,9 @@ for step in range(num_steps):
 	min_thickness_allowed = 0.30
 	param = jnp.clip(param, min_thickness_allowed, None)
 	
-	min_thickness = 1.0
-	param = param.at[params.no_damage_region_left].set(min_thickness)
-	param = param.at[params.no_damage_region_right].set(min_thickness)
+	#min_thickness = 1.0
+	#param = param.at[params.no_damage_region_left].set(min_thickness)
+	#param = param.at[params.no_damage_region_right].set(min_thickness)
 
 
 	loss_to_plot.append(loss_val)
