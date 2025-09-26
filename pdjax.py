@@ -7,6 +7,8 @@ import numpy as np
 import scipy.spatial
 import scipy.optimize
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+
 
 
 import jax.scipy
@@ -72,6 +74,7 @@ class PDState(NamedTuple):
 	rev_vol_state: jnp.ndarray
 	influence_state: jnp.ndarray
 	undamaged_influence_state: jnp.ndarray
+	damage: jnp.ndarray
 	strain_energy: float
 	time: float
 
@@ -134,7 +137,7 @@ def init_problem(bar_length: float = 20.0,
 
 	reference_position_state = pd_nodes[neighborhood] - pd_nodes[:, None]
 	reference_magnitude_state = jnp.where(reference_magnitude_state == np.inf, 0.0, reference_magnitude_state)
-
+	#jax.debug.print("reference_magnitude_state = {r}", r=reference_magnitude_state)
 
 	if prescribed_velocity is not None and prescribed_force is not None:
 		raise ValueError("Only one of prescribed_velocity or prescribed_force should be set, not both.")
@@ -205,6 +208,7 @@ def init_problem(bar_length: float = 20.0,
 		influence_state=influence_state,
 		undamaged_influence_state=undamaged_influence_state,
 		strain_energy=0.0,
+		damage=jnp.zeros(num_nodes),
 		time=0.0
 	)
 
@@ -447,10 +451,11 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	#disp = 0.001
 	#disp =  disp[0]
 	#jnp.zeros_like(ref_pos)
+	#jax.debug.print("critical_stretch = {c}", c=critical_stretch)
 
 	#Compute the deformed positions of the nodes
 	def_pos = ref_pos + disp
-	#jax.debug.print("def_pos finite: {b}", b=jnp.all(jnp.isfinite(def_pos)))
+	#jax.debug.print("disp: {d}", d=disp)
 
 	#Compute deformation state
 	def_state = def_pos[neigh] - def_pos[:,None]
@@ -461,6 +466,7 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	# Compute deformation magnitude state
 	#def_mag_state = jnp.sqrt(def_state * def_state)
 	def_mag_state = jnp.linalg.norm(def_state, axis=-1)
+	#jax.debug.print("def_mag_state: {b}", b=def_mag_state)
 
 
 	# Compute deformation unit state
@@ -477,21 +483,22 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	exten_state = def_mag_state[:, None] - ref_mag_state
 	#jax.debug.print("ref_mag_state: {r}", r=ref_mag_state)
 	#jax.debug.print("def_mag_state: {d}", d=def_mag_state)
+	#jax.debug.print("exten_state: {e}", e=exten_state)
 
 	#exten_state = def_mag_state - ref_mag_state
-	#jax.debug.print("[exten_state] finite={f} min={m} max={M}",
-				#f=jnp.all(jnp.isfinite(exten_state)), m=jnp.min(exten_state), M=jnp.max(exten_state))
+	#jax.debug.print("[exten_state] min={m} max={M}",  m=jnp.min(exten_state), M=jnp.max(exten_state))
 
 	## switched out for jnp where OG code to see if 
 	stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
 	#jax.debug.print("stretch beofore my_stretch_where {s}", s=exten_state / ref_mag_state)
 	#stretch = my_stretch_where(ref_mag_state, exten_state)
-	#jax.debug.print("stretch after my_stretch_where {s}", s=stretch)
-	
+	#jax.debug.print("stretch [15-24] {s}", s=stretch[15:24])
+
     # Apply critical stretch fracture criteria to update inf state
 	def damage_branch(inf_state):
-		#inf_state = jnp.where(stretch > critical_stretch, 0.0, inf_state)
-		inf_state = inf_state_where(inf_state, stretch, critical_stretch)
+		#inf_state_updated = jnp.where(stretch > critical_stretch, 0.0, inf_state)
+		#inf_state = inf_state_where(inf_state, stretch, critical_stretch)
+		inf_state = jnp.where(stretch > critical_stretch, 0.0, inf_state)
 		#jax.debug.print("inf_state after inf_state_where {i}", i=inf_state)
 		inf_state = inf_state.at[no_damage_region_left, :].set(undamaged_influence_state_left)
 		inf_state = inf_state.at[no_damage_region_right, :].set(undamaged_influence_state_right)
@@ -503,7 +510,7 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 
 
 	# Apply a critical strech fracture criteria
-	inf_state = lax.cond(allow_damage, damage_branch, no_damage_branch, inf_state)
+	inf_state_updated = lax.cond(allow_damage, damage_branch, no_damage_branch, inf_state)
 	#jax.debug.print("inf_state after damage/no_damage_branch {i}", i=inf_state)
 
 	#jax.debug.print("[inf_state pre-eps] any==0? {z} finite={f}",
@@ -542,7 +549,7 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	#jax.debug.print("force_state finite: {b}", b=force_state)
 
 	###  return bond_strain_energy
-	return force_state, inf_state, bond_strain_energy
+	return force_state, inf_state_updated, bond_strain_energy
 
 
 
@@ -644,7 +651,7 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
 @partial(jax.jit, static_argnums=(2,))
 def solve_one_step(params, vals, allow_damage:bool):
 
-	(disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy, time) = vals
+	(disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage, strain_energy, time) = vals
 
 	prescribed_velocity = params.prescribed_velocity
 	bar_length = params.bar_length
@@ -686,6 +693,8 @@ def solve_one_step(params, vals, allow_damage:bool):
 
 	disp = disp.at[:].add(vel * time_step + (0.5 * acc_new * time_step * time_step))
 	acc = acc.at[:].set(acc_new)
+	
+	damage_updated = compute_damage(vol_state, inf_state, undamaged_inf_state)
 
 	#jax.debug.print("disp in solve_one_step: {d}", d=disp)
 
@@ -709,7 +718,7 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#jax.debug.print("disp: {d}", d=disp)
 	#jax.debug.print("disp? {z}", z=jnp.any(disp == 0))
 
-	return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy, time + time_step)
+	return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage_updated, strain_energy, time + time_step)
 
 
 ### put wrapper on solve
@@ -736,11 +745,11 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
     #jax.debug.print("vol_state zeros? {z}", z=jnp.any(vol_state == 0))
 
 
-    inf_state = state.influence_state.copy() 
+    #inf_state = state.influence_state.copy() 
     undamaged_inf_state = state.undamaged_influence_state.copy()
 
 	# Initialize a fresh influence state for this run
-	#inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
+    inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
 
 	#jax.debug.print("inf_state update after where: {i}",i=inf_state)
 	# The fields
@@ -751,6 +760,7 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
     #strain_energy = 0.0
     
     strain_energy = jnp.zeros_like(params.pd_nodes)
+    damage = jnp.zeros_like(params.pd_nodes)
 
 
     def loop_body(i, vals):
@@ -758,12 +768,12 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
         return new_vals
 
 	#Solve
-    vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, strain_energy, time)
+    vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage, strain_energy, time)
 
     vals_returned = jax.lax.fori_loop(0, num_steps, loop_body, vals)
 
 
-    return PDState(disp=vals_returned[0], vel=vals_returned[1], acc=vals_returned[2], vol_state=vals_returned[3], rev_vol_state=vals_returned[4], influence_state=vals_returned[5], undamaged_influence_state=vals_returned[7], strain_energy=vals_returned[8],time=vals_returned[9])
+    return PDState(disp=vals_returned[0], vel=vals_returned[1], acc=vals_returned[2], vol_state=vals_returned[3], rev_vol_state=vals_returned[4], influence_state=vals_returned[5], undamaged_influence_state=vals_returned[7], damage=vals_returned[8], strain_energy=vals_returned[9], time=vals_returned[10])
 
 
 ### put wrapper on solve
@@ -828,13 +838,12 @@ def zero_small_inf_state(inf_state: jax.Array, threshold: float = 1e-9) -> jax.A
     return jax.vmap(row_fn, in_axes=0)(inf_state)
 
 @jax.jit
-def thickness_in_no_damage_region(thickness:jax.Array, no_damage_region_left:jax.Array, no_damage_region_right:jax.Array, min_thickness:float):
+def thickness_in_no_damage_region(thickness:jax.Array, no_damage_region_left:jax.Array, no_damage_region_right:jax.Array, min_thickness:float=1.0):
     """
     Set thickness to min_thickness in the no-damage regions.
     """
     thickness = thickness.at[no_damage_region_left].set(min_thickness)
     thickness = thickness.at[no_damage_region_right].set(min_thickness)
-    jax.debug.print("thickness in no damage region: {t}", t=thickness)	
     return thickness
 
 def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state:jax.Array):
@@ -844,18 +853,22 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
 def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:bool, max_time:float):
-	thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
+	#thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
  
  	# Thickness can't change in no_damage regions
 	min_thickness_no_damage = 5.0
 	#thickness_vector = thickness_in_no_damage_region(thickness_vector, params.no_damage_region_left, params.no_damage_region_right, min_thickness_no_damage)
 
-	
+
 	output_vals = _solve(params, state, thickness=thickness_vector, allow_damage=allow_damage, max_time=max_time)
 	checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
+ 
 
 	# Extract strain energy density from output_vals
-	strain_energy = output_vals[7]
+	strain_energy = output_vals[8]
+ 
+	# Extract damage from output_vals
+	damage = output_vals[7]
 
 	# Calc strain energy density
 	#total_volume = jnp.sum(vol_state)
@@ -905,9 +918,9 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:b
 	#loss_value = jnp.sum(strain_energy_density / (thickness_vector + 1e-8))
 
 	# Weighted combination, multi-objective
-	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor) 
-	
-	return loss_value
+	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor)
+
+	return loss_value, (strain_energy, damage)
 
 ### Main Program ####
 if __name__ == "__main__":
@@ -922,7 +935,7 @@ if __name__ == "__main__":
     density = 7930.0
     elastic_modulus = 200E9
 	#prescribed_velocity = 0.01  # Prescribed velocity at the boundaries
-    prescribed_force = 1E12
+    prescribed_force = 1E10
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.3
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -930,11 +943,11 @@ if __name__ == "__main__":
     # Compute critical stretch from fracture toughness as done in Silling and Askari 2005
     # Now critical stretch adjusts based on horizon, discretization, and material properties
     critical_stretch = np.sqrt(5 * mode1_fracture_tough / (9 * bulk_modulus * fixed_horizon))
-    print("critical_stretch: ", critical_stretch)
-    
+
     #Critical stretch for damage, set to None for no damage, 1e-4
-    #critical_stretch = 1.0E1
-    #critical_stretch = 1.0E-04
+    #critical_stretch = 10.0
+    
+    print("critical_stretch: ", critical_stretch)
 
     allow_damage = True
 
@@ -958,8 +971,9 @@ if __name__ == "__main__":
     #thickness = jnp.full((num_elems,), 1.0)
     #scalar_param = 0.5
     #hickness0 = scalar_param * jnp.ones(num_elems)
-    #thickness =  1.0
-    thickness0 = jnp.array(1.0)
+    thickness =  1.0
+    thickness0 = thickness 
+
     
 
     # Initialize the problem with fixed parameters
@@ -973,10 +987,10 @@ if __name__ == "__main__":
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
-    #max_time = 1e-02
-    max_time = 5e-03
+    #max_time = 1.0E-01
+    max_time = 1.0E-01
     max_time = float(max_time)
-	
+    
     #key = jax.random.PRNGKey(0)  # Seed for reproducibility
     #shape = (params.num_nodes,)  # Example shape
     #param = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.2)
@@ -993,7 +1007,7 @@ if __name__ == "__main__":
     ax.set_xlabel("Node Position")
     ax.set_ylabel("Displacement")
     ax.set_title("Displacement vs Node Position (Forward Problem)")
-    #ax.set_ylim(-5.973E7, -5.97280E7) 
+    #ax.set_ylim(-40,40)
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness)
@@ -1009,18 +1023,19 @@ if __name__ == "__main__":
 #shape = (params.num_nodes,)  # Example shape
 #param = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.5)
 # scalar param
-param = jnp.array([1.0])
-#param = jnp.full((num_elems,), 1.0)
+#param = jnp.array([1.0])
+param = jnp.full((num_elems,), 1.0)
 
 loss_to_plot = []
-total_vol_state_to_plot = []
+damage_to_plot = []
 strain_energy_to_plot =[]
+damage = []
 
 # when use strain energy density as loss, use smaller
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 35
+num_steps = 5
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1028,15 +1043,17 @@ thickness_max = 1.0E2
 lower = 1E-2
 upper = 20
 
-max_time = 1.0E-03
-#max_time = 5.0E-03
+#max_time = 1.0E-02
+max_time = 5.0E-03
+#max_time = 1.0E-03
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
 opt_state = optimizer.init(param)
 
 # Loss function (already defined as 'loss')
-loss_and_grad = jax.value_and_grad(loss, argnums=2)
+#loss_and_grad = jax.value_and_grad(loss, argnums=2)
+loss_and_grad = jax.value_and_grad(loss, argnums=2, has_aux=True)
 
 # Clamp function
 def clamp_params(grads):
@@ -1061,7 +1078,8 @@ for step in range(num_steps):
 	assert jnp.all(jnp.isfinite(param)), "Initial thickness contains NaNs!"
 	
 
-	loss_val, grads = loss_and_grad(params, state, param, allow_damage=allow_damage, max_time=max_time)
+	#loss_val, grads = loss_and_grad(params, state, param, allow_damage=allow_damage, max_time=max_time)
+	(loss_val, (strain_energy, damage)), grads = loss_and_grad(params, state, param, allow_damage=allow_damage, max_time=max_time)
 
 	# Calling clamp function to restrict gradient
 	#grads = clamp_params(grads)
@@ -1079,30 +1097,18 @@ for step in range(num_steps):
 	min_thickness_allowed = 0.30
 	param = jnp.clip(param, min_thickness_allowed, None)
 	
-	#min_thickness = 1.0
-	#param = param.at[params.no_damage_region_left].set(min_thickness)
-	#param = param.at[params.no_damage_region_right].set(min_thickness)
+	min_thickness = 1.0
+	param = param.at[params.no_damage_region_left].set(min_thickness)
+	param = param.at[params.no_damage_region_right].set(min_thickness)
 
-
+	print("damage in optimization loop: ", damage)
 	loss_to_plot.append(loss_val)
 	params_to_plot = param * jnp.ones(params.num_nodes)
-	strain_energy_to_plot.append(_solve(params, state, params_to_plot, allow_damage, max_time)[7])
+	damage_to_plot.append(damage)
+	strain_energy_to_plot.append(strain_energy)
 
 	##print(f"Updated param: {param}")
 	#print("updated param: ", param)
 	#if step % 20 == 0:
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
-
-
-'''
-results = _solve(params, state, param, allow_damage, max_time=float(max_time))
-disp = results[0]
-fig, ax = plt.subplots()
-ax.plot(params.pd_nodes, disp, 'k.')
-ax.set_xlabel("Node Position")
-ax.set_ylabel("Displacement")
-ax.set_title("Forward Problem w/ Optimized Thickness")
-plt.tight_layout()
-plt.show()
-'''
