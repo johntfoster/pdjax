@@ -1,4 +1,5 @@
 from functools import partial
+import time
 
 import jax
 import jax.numpy as jnp
@@ -75,6 +76,8 @@ class PDState(NamedTuple):
 	influence_state: jnp.ndarray
 	undamaged_influence_state: jnp.ndarray
 	damage: jnp.ndarray
+	forces_array: jnp.ndarray
+	disp_array: jnp.ndarray
 	strain_energy: float
 	time: float
 
@@ -207,6 +210,8 @@ def init_problem(bar_length: float = 20.0,
 		rev_vol_state=rev_vol_state,
 		influence_state=influence_state,
 		undamaged_influence_state=undamaged_influence_state,
+		forces_array=jnp.zeros(num_nodes),
+		disp_array=jnp.zeros(num_nodes),
 		strain_energy=0.0,
 		damage=jnp.zeros(num_nodes),
 		time=0.0
@@ -252,45 +257,11 @@ def vol_state_where(ref_mag_state: jax.Array, horiz: float, lens: jax.Array, nei
 	# Vectorize over rows (nodes)
 	return jax.vmap(col_fn, in_axes=(0, 0, 0))(ref_mag_state, threshold, vol_state_uncorrected)
 
-@jax.jit
-def vol_state_partial_where(is_partial_volume_case1: jax.Array,
-							is_partial_volume_case2: jax.Array,
-							lens: jax.Array,
-							neigh: jax.Array,
-							ref_mag_state: jax.Array,
-							horiz: float,
-							width: float,
-							thickness: jax.Array,
-							vol_state: jax.Array):
-	"""
-	Compute vol_state for partial volume cases using lax.cond and nested vmap.
-	Works for 1D or 2D arrays (nodes x neighbors).
-	"""
 
-	# Scalar conditional function
-	def cond_fn(case1, case2, l, n, r, v):
-		val1 = (l / 2.0 - (r - horiz)) * width * thickness[n]
-		val2 = (l / 2.0 + (horiz - r)) * width * thickness[n]
-		return jax.lax.cond(
-			case1,
-			lambda _: val1,
-			lambda _: jax.lax.cond(case2, lambda _: val2, lambda _: v, operand=None),
-			operand=None
-		)
-
-	# Vectorize over neighbors (columns)
-	col_fn = jax.vmap(cond_fn, in_axes=(0, 0, 0, 0, 0, 0))
-	# Vectorize over nodes (rows)
-	return jax.vmap(col_fn, in_axes=(0, 0, 0, 0, 0, 0))(is_partial_volume_case1, is_partial_volume_case2,lens[neigh], neigh, ref_mag_state, vol_state)
-
-
-@jax.jit
 def vol_state_clip_where(vol_state: jax.Array, vol_state_uncorrected: jax.Array):
     return jnp.minimum(vol_state, vol_state_uncorrected)
 
 ######################################################################################
-
-
 def compute_partial_volumes(params, thickness:jax.Array):
 
 	# Setup some local (to function) convenience variables
@@ -323,7 +294,6 @@ def compute_partial_volumes(params, thickness:jax.Array):
 	# Compute the partial volumes conditionally
 	vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * width * thickness[neigh], vol_state)
 	vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * width * thickness[neigh], vol_state)
-	#vol_state = vol_state_partial_where(is_partial_volume_case1, is_partial_volume_case2, lens, neigh, ref_mag_state, horiz, width, thickness, vol_state)
 
 
 	# If the partial volume is predicted to be larger than the unocrrected volume, set it back
@@ -448,10 +418,6 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	undamaged_influence_state_left = params.undamaged_influence_state_left
 	undamaged_influence_state_right = params.undamaged_influence_state_right
 
-	#disp = 0.001
-	#disp =  disp[0]
-	#jnp.zeros_like(ref_pos)
-	#jax.debug.print("critical_stretch = {c}", c=critical_stretch)
 
 	#Compute the deformed positions of the nodes
 	def_pos = ref_pos + disp
@@ -459,10 +425,8 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 
 	#Compute deformation state
 	def_state = def_pos[neigh] - def_pos[:,None]
-	#jax.debug.print("def_state finite: {b}", b=jnp.all(jnp.isfinite(def_state)))
-	#jax.debug.print("def_state zeros? {z}", z=jnp.any(def_state == 0))
+	#jax.debug.print("def_state finite: {b}", b=jnp.all(jnp.isfinite(def_state))
 
-	
 	# Compute deformation magnitude state
 	#def_mag_state = jnp.sqrt(def_state * def_state)
 	def_mag_state = jnp.linalg.norm(def_state, axis=-1)
@@ -482,11 +446,7 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	# Compute scalar extension state
 	exten_state = def_mag_state[:, None] - ref_mag_state
 	#jax.debug.print("ref_mag_state: {r}", r=ref_mag_state)
-	#jax.debug.print("def_mag_state: {d}", d=def_mag_state)
-	#jax.debug.print("exten_state: {e}", e=exten_state)
 
-	#exten_state = def_mag_state - ref_mag_state
-	#jax.debug.print("[exten_state] min={m} max={M}",  m=jnp.min(exten_state), M=jnp.max(exten_state))
 
 	## switched out for jnp where OG code to see if 
 	stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
@@ -572,17 +532,93 @@ def smooth_ramp(t, t0, c=1.0, beta=5.0):
 	# Smooth transition using an exponential decay term
 	smooth_transition = c * (1 - jnp.exp(-beta * (t - t0))) + (c / t0) * t0
 
-	# Use `np.where` to define the piecewise function
+	# Use `jnp.where` to define the piecewise function
 	f = jnp.where(t < t0, linear_ramp, smooth_transition)
+ 
 	
 	return f
 
+@jax.jit
+def save_if_needed(forces_array, force_value, step_number):
+    """
+    Save force_value into forces_array based on step_number rules:
+      - every step when step_number < 100
+      - every 500 steps when 100 <= step_number < 2000
+      - every 5000 steps when step_number >= 2000
+    """
+    mask = jnp.logical_and(
+		step_number <= 10000,  # upper limit
+		jnp.logical_or(
+			step_number < 100,
+			jnp.logical_or(
+				(step_number >= 100) & (step_number < 2000) & (step_number % 500 == 0),
+				(step_number >= 2000) & (step_number % 5000 == 0)
+			)
+		)
+	)
+    
+
+    # Use lax.cond to choose branch without Python-side branching
+    def write(arr):
+        return arr.at[step_number].set(force_value)
+    def skip(arr):
+        return arr
+    return jax.lax.cond(mask, write, skip, forces_array)
+
+@jax.jit
+def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, force_value):
+    """
+    If step_number is one we want to save, write force_value at that index,
+    otherwise return forces_array unchanged.
+    """
+    mask = jnp.logical_and(
+		step_number <= 10000,  # upper limit
+		jnp.logical_or(
+			step_number < 100,
+			jnp.logical_or(
+				(step_number >= 100) & (step_number < 2000) & (step_number % 500 == 0),
+				(step_number >= 2000) & (step_number % 5000 == 0)
+			)
+		)
+	)
+    # Use lax.cond to choose branch without Python-side branching
+    
+    def write(arr):
+        damage = compute_damage(vol_state, inf_state, undamaged_inf_state)
+        return arr.at[step_number].set(damage)
+    def skip(arr):
+        return arr
+    return jax.lax.cond(mask, write, skip, damage)
+
+@jax.jit
+def save_disp_if_needed(disp_array, disp_value, step_number, force_value):
+    """
+    If step_number is one we want to save, write disp_value at that index,
+    otherwise return disp_array unchanged.
+    """
+    mask = jnp.logical_and(
+		step_number <= 10000,  # upper limit
+		jnp.logical_or(
+			step_number < 100,
+			jnp.logical_or(
+				(step_number >= 100) & (step_number < 2000) & (step_number % 500 == 0),
+				(step_number >= 2000) & (step_number % 5000 == 0)
+			)
+		)
+	)
+    # Use lax.cond to choose branch without Python-side branching
+    def write(arr):
+        return arr.at[step_number].set(disp_value)
+    def skip(arr):
+        return arr
+    return jax.lax.cond(mask, write, skip, disp_array)
+
+
 # Internal force calculation
 #@jax.jit(static_argnums=7)  
-@partial(jax.jit, static_argnums=(7))
-def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, thickness, time, allow_damage):
+@partial(jax.jit, static_argnums=(14))
+def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, undamaged_inf_state, damage, thickness, time, time_step, num_steps, forces_array, disp_array, step_number, allow_damage):
 
-		
 	# Define some local convenience variables     
 	neigh = params.neighborhood
 	prescribed_force = params.prescribed_force
@@ -612,6 +648,8 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
 		ri = num_nodes - 1
 		#ramp_force = smooth_ramp(time, t0=1.e-3, c=prescribed_force) 
 		ramp_force = smooth_ramp(time, t0=1.e-5, c=prescribed_force) 
+
+
 
 		denom_left  = vol_state[li].sum() + rev_vol_state[li][0]
 		denom_right = vol_state[ri].sum() + rev_vol_state[ri][0]
@@ -646,13 +684,17 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
 		right_bc_area_ri = width * thickness[ri]
 		force = force.at[ri].add(ramp_force * right_bc_area_ri)
 
-	return force, inf_state, strain_energy
+	forces_array = save_if_needed(forces_array, ramp_force, step_number)
+	damage = calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, ramp_force)
+
+	
+
+	return force, inf_state, strain_energy, ramp_force, forces_array, damage
 
 @partial(jax.jit, static_argnums=(2,))
 def solve_one_step(params, vals, allow_damage:bool):
 
-	(disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage, strain_energy, time) = vals
-
+	(disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage, forces_array, disp_array, strain_energy, time) = vals
 	prescribed_velocity = params.prescribed_velocity
 	bar_length = params.bar_length
 	left_bc_region = params.left_bc_region
@@ -664,6 +706,8 @@ def solve_one_step(params, vals, allow_damage:bool):
 	# TODO: Solve for stable time step
 	time_step = 5.0E-08
     #time_step = 1E-07
+
+	num_steps = max_time / time_step
 
 	#jax.debug.print("in solve_one_step: {t}", t=time)
 	##########################
@@ -682,10 +726,9 @@ def solve_one_step(params, vals, allow_damage:bool):
 		disp = disp.at[left_bc_region].set(f(pd_nodes[left_bc_region]))
 		disp = disp.at[right_bc_region].set(f(pd_nodes[right_bc_region]))
 
+	step_number = jnp.floor_divide(time, time_step).astype(jnp.int32)
 
-
-
-	force, inf_state, strain_energy = compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, thickness, time, allow_damage)
+	force, inf_state, strain_energy, ramp_force, forces_array, damage = compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, undamaged_inf_state, damage, thickness, time, time_step, num_steps, forces_array, disp_array, step_number, allow_damage)
 
 	acc_new = force / rho
 
@@ -694,7 +737,11 @@ def solve_one_step(params, vals, allow_damage:bool):
 	disp = disp.at[:].add(vel * time_step + (0.5 * acc_new * time_step * time_step))
 	acc = acc.at[:].set(acc_new)
 	
-	damage_updated = compute_damage(vol_state, inf_state, undamaged_inf_state)
+	#step_number = time / time_step
+	step_number = jnp.floor_divide(time, time_step).astype(int)
+	disp_array = save_disp_if_needed(disp_array, disp, step_number, ramp_force)
+ 
+	#damage_updated = compute_damage(vol_state, inf_state, undamaged_inf_state)
 
 	#jax.debug.print("disp in solve_one_step: {d}", d=disp)
 
@@ -718,12 +765,12 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#jax.debug.print("disp: {d}", d=disp)
 	#jax.debug.print("disp? {z}", z=jnp.any(disp == 0))
 
-	return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage_updated, strain_energy, time + time_step)
+	return (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage, forces_array, disp_array, strain_energy, time + time_step)
 
 
 ### put wrapper on solve
 #@partial(jax.jit, static_argnums=(3,4))
-def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float=1.0):
+def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_damage:bool, max_time:float=1.0):
 	
 	#Solves in time using Verlet-Velocity integration
 
@@ -735,6 +782,9 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
     num_steps = int(max_time / time_step)
 
     vol_state, rev_vol_state = compute_partial_volumes(params, thickness)
+    
+    # Reset forces array
+    forces_array = jnp.full((num_steps,), 0.0)
 
 	# Clamp to avoid divide-by-zero or log(0) NaNs
     vol_state = jnp.maximum(vol_state, EPS)
@@ -745,11 +795,12 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
     #jax.debug.print("vol_state zeros? {z}", z=jnp.any(vol_state == 0))
 
 
-    #inf_state = state.influence_state.copy() 
+    inf_state = state.influence_state.copy() 
     undamaged_inf_state = state.undamaged_influence_state.copy()
 
 	# Initialize a fresh influence state for this run
-    inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
+    #inf_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
+    #jax.debug.print("inf_state after init: {i}",i=inf_state)
 
 	#jax.debug.print("inf_state update after where: {i}",i=inf_state)
 	# The fields
@@ -760,20 +811,80 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
     #strain_energy = 0.0
     
     strain_energy = jnp.zeros_like(params.pd_nodes)
-    damage = jnp.zeros_like(params.pd_nodes)
+    #damage = jnp.zeros_like(params.pd_nodes)
+    damage = jnp.zeros((num_steps, params.num_nodes))
+    disp_array = jnp.zeros((num_steps, params.num_nodes))
 
+    jax.debug.print("Damage after reset: {d}", d=damage)
 
     def loop_body(i, vals):
         new_vals = solve_one_step(params, vals, allow_damage)
         return new_vals
 
 	#Solve
-    vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage, strain_energy, time)
+    vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage, forces_array, disp_array, strain_energy, time)
 
     vals_returned = jax.lax.fori_loop(0, num_steps, loop_body, vals)
+    
+    #jax.debug.print("Damage after sim: {d}", d=vals_returned[9])
+
+    # Using mask to save forces at desired steps for plotting animation
+    step_inds = jnp.arange(num_steps)
+    '''
+    mask_all = jnp.logical_and(
+		step_inds <= 10000,  # upper limit
+		jnp.logical_or(
+			step_inds < 100,
+			jnp.logical_or(
+				(step_inds >= 100) & (step_inds < 2000) & (step_inds % 2000 == 0),
+				(step_inds >= 2000) & (step_inds % 5000 == 0)
+			)
+		)
+	)
+    '''
+    
+    
+    # Step indices
+    step_inds = jnp.arange(num_steps)
+
+	# Compute the force applied at each step
+    forces = smooth_ramp(step_inds * time_step, t0=1.e-5, c=1.0, beta=5.0)
+
+	# Define your target forces
+    targets = jnp.concatenate([
+		jnp.arange(1e10, 1e11, 1e10),   # 1e10, 2e10, ... 1e11
+		jnp.arange(1e11, 1e12+1, 1e11), # 1e11, 2e11, ... 1e12
+		jnp.arange(1.5e12, 1e13+1, 5e12) # 1.5e12, 2e12, 2.5e12, ...
+	])
+
+	# Pick the steps where the force is closest to each target
+    def find_closest(forces, targets):
+		# forces: (num_steps,), targets: (num_targets,)
+        diffs = jnp.abs(forces[None, :] - targets[:, None])  # shape (num_targets, num_steps)
+        closest_inds = jnp.argmin(diffs, axis=1)             # (num_targets,)
+        return closest_inds
+
+    target_indices = find_closest(forces, targets)
+    
+	# Build mask from those indices
+    mask_all = jnp.zeros(num_steps, dtype=bool).at[target_indices].set(True)
+    
+    forces_saved = vals_returned[9][mask_all]
+    #jax.debug.print("forces_saved after sim: {f}", f=forces_saved)
+    jax.debug.print("forces_saved after sim: {f}", f=forces_saved.shape)
+
+    damage_saved = vals_returned[8][mask_all]
+    #jax.debug.print("damage_saved after sim: {d}", d=damage_saved)
+    jax.debug.print("damage_saved after sim: {d}", d=damage_saved.shape)
+    
+    
+    disp_saved = vals_returned[10][mask_all]
+    jax.debug.print("disp_saved after sim: {d}", d=disp_saved)
+    jax.debug.print("disp_saved after sim: {d}", d=disp_saved.shape)
 
 
-    return PDState(disp=vals_returned[0], vel=vals_returned[1], acc=vals_returned[2], vol_state=vals_returned[3], rev_vol_state=vals_returned[4], influence_state=vals_returned[5], undamaged_influence_state=vals_returned[7], damage=vals_returned[8], strain_energy=vals_returned[9], time=vals_returned[10])
+    return PDState(disp=vals_returned[0], vel=vals_returned[1], acc=vals_returned[2], vol_state=vals_returned[3], rev_vol_state=vals_returned[4], influence_state=vals_returned[5],
+                   undamaged_influence_state=vals_returned[7], damage=damage_saved, forces_array=forces_saved, disp_array=disp_saved, strain_energy=vals_returned[11], time=vals_returned[12])
 
 
 ### put wrapper on solve
@@ -853,7 +964,7 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
 def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:bool, max_time:float):
-	#thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
+	# thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
  
  	# Thickness can't change in no_damage regions
 	min_thickness_no_damage = 5.0
@@ -862,7 +973,8 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:b
 
 	output_vals = _solve(params, state, thickness=thickness_vector, allow_damage=allow_damage, max_time=max_time)
 	checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
- 
+	
+	jax.debug.print("inf_state after run: {i}", i=output_vals[5])
 
 	# Extract strain energy density from output_vals
 	strain_energy = output_vals[8]
@@ -935,17 +1047,17 @@ if __name__ == "__main__":
     density = 7930.0
     elastic_modulus = 200E9
 	#prescribed_velocity = 0.01  # Prescribed velocity at the boundaries
-    prescribed_force = 1E10
+    prescribed_force = 1E13
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.3
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
+    G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
     
     # Compute critical stretch from fracture toughness as done in Silling and Askari 2005
     # Now critical stretch adjusts based on horizon, discretization, and material properties
-    critical_stretch = np.sqrt(5 * mode1_fracture_tough / (9 * bulk_modulus * fixed_horizon))
-
+    #critical_stretch = np.sqrt(5 * G / (9 * bulk_modulus * fixed_horizon))
     #Critical stretch for damage, set to None for no damage, 1e-4
-    #critical_stretch = 10.0
+    critical_stretch = 25.0
     
     print("critical_stretch: ", critical_stretch)
 
@@ -974,7 +1086,7 @@ if __name__ == "__main__":
     thickness =  1.0
     thickness0 = thickness 
 
-    
+
 
     # Initialize the problem with fixed parameters
     params, state = init_problem(
@@ -991,17 +1103,25 @@ if __name__ == "__main__":
     max_time = 1.0E-01
     max_time = float(max_time)
     
+    time_step = 5.0E-08
+    num_steps = int(max_time / time_step)
+    
+    forces_array = jnp.full((num_steps,), 0.0)
+    
     #key = jax.random.PRNGKey(0)  # Seed for reproducibility
     #shape = (params.num_nodes,)  # Example shape
     #param = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.2)
 
     # Solve the problem with initial thickness
     thickness0 = ensure_thickness_vector(thickness0, num_elems)
-    results = _solve(params, state, thickness0, allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     jax.debug.print("allow_damage in main: {a}", a=allow_damage)
     
     #print("displacement values: ", results[0])
     disp = results[0]
+    #print("disp shape: ", disp.shape)
+    #print("disp values at final time step: ", disp[-1])
+    
     fig, ax = plt.subplots()
     ax.plot(params.pd_nodes, disp, 'k.')
     ax.set_xlabel("Node Position")
@@ -1011,8 +1131,11 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness)
-    
+    print("damage: ", results.damage[-1])
 
+    
+    
+'''
 ##################################################
 # # Now using Optax to maximize
 #key = jax.random.PRNGKey(np.random.randint(0, 1_000_000))  # Use a random seed each run
@@ -1035,7 +1158,7 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 5
+num_steps = 10
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1097,9 +1220,9 @@ for step in range(num_steps):
 	min_thickness_allowed = 0.30
 	param = jnp.clip(param, min_thickness_allowed, None)
 	
-	min_thickness = 1.0
-	param = param.at[params.no_damage_region_left].set(min_thickness)
-	param = param.at[params.no_damage_region_right].set(min_thickness)
+	#min_thickness = 1.0
+	#param = param.at[params.no_damage_region_left].set(min_thickness)
+	#param = param.at[params.no_damage_region_right].set(min_thickness)
 
 	print("damage in optimization loop: ", damage)
 	loss_to_plot.append(loss_val)
@@ -1112,3 +1235,4 @@ for step in range(num_steps):
 	#if step % 20 == 0:
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
+'''
