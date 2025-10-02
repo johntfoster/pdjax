@@ -826,7 +826,7 @@ def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_dam
     damage = jnp.zeros((num_steps, params.num_nodes))
     disp_array = jnp.zeros((num_steps, params.num_nodes))
 
-    jax.debug.print("Damage after reset: {d}", d=damage)
+    #jax.debug.print("Damage after reset: {d}", d=damage)
 
     def loop_body(i, vals):
         new_vals = solve_one_step(params, vals, allow_damage)
@@ -859,19 +859,19 @@ def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_dam
 
     forces_saved = vals_returned[9][mask_all]
     #jax.debug.print("forces_saved after sim: {f}", f=forces_saved)
-    jax.debug.print("forces_saved after sim: {f}", f=forces_saved.shape)
+    #jax.debug.print("forces_saved after sim: {f}", f=forces_saved.shape)
 
     damage_saved = vals_returned[8][mask_all]
     #jax.debug.print("damage_saved after sim: {d}", d=damage_saved)
-    jax.debug.print("damage_saved after sim: {d}", d=damage_saved.shape)
+    #jax.debug.print("damage_saved after sim: {d}", d=damage_saved.shape)
     
     
     disp_saved = vals_returned[10][mask_all]
-    jax.debug.print("disp_saved after sim: {d}", d=disp_saved)
-    jax.debug.print("disp_saved after sim: {d}", d=disp_saved.shape)
-    jax.debug.print("mask_all sum: {s}", s=jnp.sum(mask_all))
+    #jax.debug.print("disp_saved after sim: {d}", d=disp_saved)
+    #jax.debug.print("disp_saved after sim: {d}", d=disp_saved.shape)
+    #jax.debug.print("mask_all sum: {s}", s=jnp.sum(mask_all))
     saved_indices = jnp.where(mask_all)[0]  # [0] to get the array of indices
-    jax.debug.print("Saved indices: {inds}", inds=saved_indices)
+    #jax.debug.print("Saved indices: {inds}", inds=saved_indices)
 
     return PDState(disp=vals_returned[0], vel=vals_returned[1], acc=vals_returned[2], vol_state=vals_returned[3], rev_vol_state=vals_returned[4], influence_state=vals_returned[5],
                    undamaged_influence_state=vals_returned[7], damage=damage_saved, forces_array=forces_saved, disp_array=disp_saved, strain_energy=vals_returned[11], time=vals_returned[12])
@@ -953,7 +953,7 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	#jax.debug.print("vol_state in comp damage: {i}", i=vol_state)
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
-def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:bool, max_time:float):
+def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float):
 	# thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
  
  	# Thickness can't change in no_damage regions
@@ -961,13 +961,13 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], allow_damage:b
 	#thickness_vector = thickness_in_no_damage_region(thickness_vector, params.no_damage_region_left, params.no_damage_region_right, min_thickness_no_damage)
 
 
-	output_vals = _solve(params, state, thickness=thickness_vector, allow_damage=allow_damage, max_time=max_time)
+	output_vals = _solve(params, state, thickness=thickness_vector, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
 	checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
 	
 	jax.debug.print("inf_state after run: {i}", i=output_vals[5])
 
 	# Extract strain energy density from output_vals
-	strain_energy = output_vals[8]
+	strain_energy = output_vals[10]
  
 	# Extract damage from output_vals
 	damage = output_vals[7]
@@ -1125,7 +1125,7 @@ if __name__ == "__main__":
 
     
     
-'''
+
 ##################################################
 # # Now using Optax to maximize
 #key = jax.random.PRNGKey(np.random.randint(0, 1_000_000))  # Use a random seed each run
@@ -1148,7 +1148,7 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 10
+num_steps = 20
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1192,7 +1192,7 @@ for step in range(num_steps):
 	
 
 	#loss_val, grads = loss_and_grad(params, state, param, allow_damage=allow_damage, max_time=max_time)
-	(loss_val, (strain_energy, damage)), grads = loss_and_grad(params, state, param, allow_damage=allow_damage, max_time=max_time)
+	(loss_val, (strain_energy, damage)), grads = loss_and_grad(params, state, param, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
 
 	# Calling clamp function to restrict gradient
 	#grads = clamp_params(grads)
@@ -1214,7 +1214,7 @@ for step in range(num_steps):
 	#param = param.at[params.no_damage_region_left].set(min_thickness)
 	#param = param.at[params.no_damage_region_right].set(min_thickness)
 
-	print("damage in optimization loop: ", damage)
+	print("damage in optimization loop: ", damage[-1])
 	loss_to_plot.append(loss_val)
 	params_to_plot = param * jnp.ones(params.num_nodes)
 	damage_to_plot.append(damage)
@@ -1225,6 +1225,7 @@ for step in range(num_steps):
 	#if step % 20 == 0:
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
+
 '''
 ##################################################
 # Animation of results
@@ -1269,3 +1270,4 @@ ani = animation.FuncAnimation(fig, update, frames=len(displacements), init_func=
 
 plt.show()
 ani.save("displacements.gif", writer="imagemagick", fps=2)
+'''
