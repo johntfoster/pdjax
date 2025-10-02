@@ -546,17 +546,19 @@ def save_if_needed(forces_array, force_value, step_number):
       - every 500 steps when 100 <= step_number < 2000
       - every 5000 steps when step_number >= 2000
     """
-    mask = jnp.logical_and(
-		step_number <= 10000,  # upper limit
-		jnp.logical_or(
-			step_number < 100,
-			jnp.logical_or(
-				(step_number >= 100) & (step_number < 2000) & (step_number % 500 == 0),
-				(step_number >= 2000) & (step_number % 5000 == 0)
-			)
-		)
-	)
-    
+    mask = jnp.logical_or(
+        # Phase 1: 0-6000, every 500 steps
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
+
+        # Phase 2: 6000-15000, every 1000 steps
+        jnp.logical_and(
+            step_number >= 6000,
+            jnp.logical_and(
+                step_number <= 15000,
+                step_number % 1000 == 0
+            )
+        )
+    )
 
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
@@ -571,16 +573,21 @@ def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, ste
     If step_number is one we want to save, write force_value at that index,
     otherwise return forces_array unchanged.
     """
-    mask = jnp.logical_and(
-		step_number <= 10000,  # upper limit
-		jnp.logical_or(
-			step_number < 100,
-			jnp.logical_or(
-				(step_number >= 100) & (step_number < 2000) & (step_number % 500 == 0),
-				(step_number >= 2000) & (step_number % 5000 == 0)
-			)
-		)
-	)
+    mask = jnp.logical_or(
+        # Phase 1: 0-6000, every 500 steps
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
+
+        # Phase 2: 6000-15000, every 1000 steps
+        jnp.logical_and(
+            step_number >= 6000,
+            jnp.logical_and(
+                step_number <= 15000,
+                step_number % 1000 == 0
+            )
+        )
+    )
+
+	
     # Use lax.cond to choose branch without Python-side branching
     
     def write(arr):
@@ -596,16 +603,20 @@ def save_disp_if_needed(disp_array, disp_value, step_number, force_value):
     If step_number is one we want to save, write disp_value at that index,
     otherwise return disp_array unchanged.
     """
-    mask = jnp.logical_and(
-		step_number <= 10000,  # upper limit
-		jnp.logical_or(
-			step_number < 100,
-			jnp.logical_or(
-				(step_number >= 100) & (step_number < 2000) & (step_number % 500 == 0),
-				(step_number >= 2000) & (step_number % 5000 == 0)
-			)
-		)
-	)
+    mask = jnp.logical_or(
+        # Phase 1: 0-6000, every 500 steps
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
+
+        # Phase 2: 6000-15000, every 1000 steps
+        jnp.logical_and(
+            step_number >= 6000,
+            jnp.logical_and(
+                step_number <= 15000,
+                step_number % 1000 == 0
+            )
+        )
+    )
+
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(disp_value)
@@ -830,45 +841,22 @@ def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_dam
 
     # Using mask to save forces at desired steps for plotting animation
     step_inds = jnp.arange(num_steps)
-    '''
-    mask_all = jnp.logical_and(
-		step_inds <= 10000,  # upper limit
-		jnp.logical_or(
-			step_inds < 100,
-			jnp.logical_or(
-				(step_inds >= 100) & (step_inds < 2000) & (step_inds % 2000 == 0),
-				(step_inds >= 2000) & (step_inds % 5000 == 0)
-			)
-		)
-	)
-    '''
     
-    
-    # Step indices
-    step_inds = jnp.arange(num_steps)
+    mask_all = jnp.logical_or(
+        # Phase 1: 0-6000, every 500 steps
+        jnp.logical_and(step_inds <= 6000, step_inds % 500 == 0),
 
-	# Compute the force applied at each step
-    forces = smooth_ramp(step_inds * time_step, t0=1.e-5, c=1.0, beta=5.0)
+        # Phase 2: 6000-15000, every 1000 steps
+        jnp.logical_and(
+            step_inds >= 6000,
+            jnp.logical_and(
+                step_inds <= 15000,
+                step_inds % 1000 == 0
+            )
+        )
+    )
 
-	# Define your target forces
-    targets = jnp.concatenate([
-		jnp.arange(1e10, 1e11, 1e10),   # 1e10, 2e10, ... 1e11
-		jnp.arange(1e11, 1e12+1, 1e11), # 1e11, 2e11, ... 1e12
-		jnp.arange(1.5e12, 1e13+1, 5e12) # 1.5e12, 2e12, 2.5e12, ...
-	])
 
-	# Pick the steps where the force is closest to each target
-    def find_closest(forces, targets):
-		# forces: (num_steps,), targets: (num_targets,)
-        diffs = jnp.abs(forces[None, :] - targets[:, None])  # shape (num_targets, num_steps)
-        closest_inds = jnp.argmin(diffs, axis=1)             # (num_targets,)
-        return closest_inds
-
-    target_indices = find_closest(forces, targets)
-    
-	# Build mask from those indices
-    mask_all = jnp.zeros(num_steps, dtype=bool).at[target_indices].set(True)
-    
     forces_saved = vals_returned[9][mask_all]
     #jax.debug.print("forces_saved after sim: {f}", f=forces_saved)
     jax.debug.print("forces_saved after sim: {f}", f=forces_saved.shape)
@@ -881,7 +869,9 @@ def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_dam
     disp_saved = vals_returned[10][mask_all]
     jax.debug.print("disp_saved after sim: {d}", d=disp_saved)
     jax.debug.print("disp_saved after sim: {d}", d=disp_saved.shape)
-
+    jax.debug.print("mask_all sum: {s}", s=jnp.sum(mask_all))
+    saved_indices = jnp.where(mask_all)[0]  # [0] to get the array of indices
+    jax.debug.print("Saved indices: {inds}", inds=saved_indices)
 
     return PDState(disp=vals_returned[0], vel=vals_returned[1], acc=vals_returned[2], vol_state=vals_returned[3], rev_vol_state=vals_returned[4], influence_state=vals_returned[5],
                    undamaged_influence_state=vals_returned[7], damage=damage_saved, forces_array=forces_saved, disp_array=disp_saved, strain_energy=vals_returned[11], time=vals_returned[12])
@@ -1047,7 +1037,7 @@ if __name__ == "__main__":
     density = 7930.0
     elastic_modulus = 200E9
 	#prescribed_velocity = 0.01  # Prescribed velocity at the boundaries
-    prescribed_force = 1E13
+    prescribed_force = 1E14
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.3
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1236,3 +1226,46 @@ for step in range(num_steps):
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
 '''
+##################################################
+# Animation of results
+
+forces_to_apply = results[8]
+damages = results[7]
+displacements = results[9]
+
+fig, ax = plt.subplots()
+# Create an empty scatter instead of a line
+sc = ax.scatter([], [], c=[], cmap="viridis", vmin=0, vmax=1, s=40)
+
+ax.set_xlabel("Node Position")
+ax.set_ylabel("Displacement")
+ax.set_title("Displacement vs Node Position (Animated)")
+ax.set_xlim(-5, 5)
+ax.set_ylim(-3.0E3 - 0.1 * 3.0E3, 3.0E3 + 0.1 * 3.0E3)
+
+# add colorbar
+cbar = plt.colorbar(sc, ax=ax)
+cbar.set_label("Damage")
+
+def init():
+    sc.set_offsets(np.empty((0, 2)))   # empty coords with correct shape
+    sc.set_array(np.array([]))         # empty color array
+    return sc,
+
+def update(frame):
+    disp = displacements[frame]      # shape (num_nodes,)
+    dmg  = damages[frame]            # same shape as disp
+    nodes = params.pd_nodes          # shape (num_nodes,)
+
+    # scatter wants Nx2 array for coordinates
+    coords = np.column_stack((nodes, disp))
+    sc.set_offsets(coords)
+    sc.set_array(dmg)  # colors from damage
+
+    ax.set_title(f"Displacement, Force={forces_to_apply[frame]/1e13:.3f}e13")
+    return sc,
+
+ani = animation.FuncAnimation(fig, update, frames=len(displacements), init_func=init, blit=False, repeat=False)
+
+plt.show()
+ani.save("displacements.gif", writer="imagemagick", fps=2)
