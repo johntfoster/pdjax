@@ -447,6 +447,7 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	no_damage_region_right = params.no_damage_region_right
 	undamaged_influence_state_left = params.undamaged_influence_state_left
 	undamaged_influence_state_right = params.undamaged_influence_state_right
+ 
 
 	#disp = 0.001
 	#disp =  disp[0]
@@ -465,7 +466,8 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	
 	# Compute deformation magnitude state
 	#def_mag_state = jnp.sqrt(def_state * def_state)
-	def_mag_state = jnp.linalg.norm(def_state, axis=-1)
+	#def_mag_state = jnp.linalg.norm(def_state, axis=-1)
+	def_mag_state = (def_state * def_state) ** 0.5
 	#jax.debug.print("def_mag_state: {b}", b=def_mag_state)
 
 
@@ -473,17 +475,14 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	eps = 1e-10
 	#def_unit_state = jnp.where(def_mag_state > 1.0e-12, def_state / def_mag_state, 0.0)
 	#def_unit_state = my_stretch_where(def_mag_state[..., None], def_state)
-	def_unit_state = jnp.where(def_mag_state[..., None] > eps,
-							def_state / def_mag_state[..., None],
-							0.0)
+	def_unit_state = jnp.where(def_mag_state > eps,
+							def_state / def_mag_state, 0.0)
 	#def_unit_state = jax.vmap(safe_unit)(def_state, def_mag_state)
 
 
 	# Compute scalar extension state
-	exten_state = def_mag_state[:, None] - ref_mag_state
-	#jax.debug.print("ref_mag_state: {r}", r=ref_mag_state)
-	#jax.debug.print("def_mag_state: {d}", d=def_mag_state)
-	#jax.debug.print("exten_state: {e}", e=exten_state)
+	exten_state = def_mag_state - ref_mag_state
+ 	#exten_state = def_mag_state[:, None] - ref_mag_state
 
 	#exten_state = def_mag_state - ref_mag_state
 	#jax.debug.print("[exten_state] min={m} max={M}",  m=jnp.min(exten_state), M=jnp.max(exten_state))
@@ -492,7 +491,6 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
 	#jax.debug.print("stretch beofore my_stretch_where {s}", s=exten_state / ref_mag_state)
 	#stretch = my_stretch_where(ref_mag_state, exten_state)
-	#jax.debug.print("stretch [15-24] {s}", s=stretch[15:24])
 
     # Apply critical stretch fracture criteria to update inf state
 	def damage_branch(inf_state):
@@ -509,6 +507,7 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 		return inf_state
 
 
+  
 	# Apply a critical strech fracture criteria
 	inf_state_updated = lax.cond(allow_damage, damage_branch, no_damage_branch, inf_state)
 	#jax.debug.print("inf_state after damage/no_damage_branch {i}", i=inf_state)
@@ -592,7 +591,6 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, th
 	right_bc_region = params.right_bc_region
 
 	#jax.debug.print("disp zeros? {z}", z=jnp.any(disp == 0))
-	
 
 	##### return bond_strain_energy #####
 	force_state, inf_state, bond_strain_energy = compute_force_state_LPS(params, disp, vol_state, inf_state, allow_damage)
@@ -683,8 +681,6 @@ def solve_one_step(params, vals, allow_damage:bool):
 		disp = disp.at[right_bc_region].set(f(pd_nodes[right_bc_region]))
 
 
-
-
 	force, inf_state, strain_energy = compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, thickness, time, allow_damage)
 
 	acc_new = force / rho
@@ -767,6 +763,10 @@ def _solve(params, state, thickness:jax.Array, allow_damage:bool, max_time:float
     def loop_body(i, vals):
         new_vals = solve_one_step(params, vals, allow_damage)
         return new_vals
+
+		
+    jax.debug.print("inf_state.shape: {s}", s=inf_state.shape)
+
 
 	#Solve
     vals = (disp, vel, acc, vol_state, rev_vol_state, inf_state, thickness, undamaged_inf_state, damage, strain_energy, time)
@@ -946,7 +946,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 1.0E1
+    prescribed_force = 1.0E9
 
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1002,7 +1002,7 @@ if __name__ == "__main__":
         critical_stretch= critical_stretch)
 	
     #max_time = 1.0E-01
-    max_time = 1.0E-02
+    max_time = 5.0E-02
     max_time = float(max_time)
     
     #key = jax.random.PRNGKey(0)  # Seed for reproducibility
@@ -1025,7 +1025,7 @@ if __name__ == "__main__":
     ax.set_xlabel("Node Position")
     ax.set_ylabel("Displacement")
     ax.set_title("Displacement vs Node Position (Forward Problem)")
-    #ax.set_ylim(-10,10)
+    ax.set_ylim(-10,10)
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness)
@@ -1053,7 +1053,7 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 30
+num_steps = 5
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1130,4 +1130,5 @@ for step in range(num_steps):
 	#if step % 20 == 0:
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
+
 '''
