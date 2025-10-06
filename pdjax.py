@@ -467,12 +467,14 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	# Compute deformation magnitude state
 	#def_mag_state = jnp.sqrt(def_state * def_state)
 	#def_mag_state = jnp.linalg.norm(def_state, axis=-1)
-	def_mag_state = (def_state * def_state) ** 0.5
+	#def_mag_state = (def_state * def_state) ** 0.5
+	def_mag_state = jnp.sqrt(jnp.maximum(def_state * def_state, 1e-24))
 	#jax.debug.print("def_mag_state: {b}", b=def_mag_state)
 
 
 	# Compute deformation unit state
 	eps = 1e-10
+	def_unit_state = def_state / (def_mag_state + 1e-12)
 	#def_unit_state = jnp.where(def_mag_state > 1.0e-12, def_state / def_mag_state, 0.0)
 	#def_unit_state = my_stretch_where(def_mag_state[..., None], def_state)
 	def_unit_state = jnp.where(def_mag_state > eps,
@@ -1030,7 +1032,7 @@ if __name__ == "__main__":
     plt.show()
     print("thickness: ",thickness)
     
-'''
+
 ##################################################
 # # Now using Optax to maximize
 #key = jax.random.PRNGKey(np.random.randint(0, 1_000_000))  # Use a random seed each run
@@ -1053,7 +1055,7 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 5
+num_steps = 3
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1131,4 +1133,3 @@ for step in range(num_steps):
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
 
-'''
