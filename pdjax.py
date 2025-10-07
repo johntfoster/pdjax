@@ -1009,7 +1009,6 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	#print("undamaged_inf_state: ", output_vals[6])
 
 	#Calling compute damage 
-	damage = output_vals[7]
 	#jax.debug.print("inf state: {i}", i=output_vals[5])
 	loss_value = damage.sum()
 
@@ -1036,6 +1035,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	return loss_value, (strain_energy, damage)
 
+
 ### Main Program ####
 if __name__ == "__main__":
     # Define fixed parameters
@@ -1044,6 +1044,14 @@ if __name__ == "__main__":
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
+    
+    # material propertie selected for copper 
+    #density = 8960.0
+    #elastic_modulus = 130E9
+    #mode1_fracture_tough = 76.0E6  # Mode I fracture toughness in J/m^2
+    #poisson_ratio = 0.3
+    
+    #prescribed_force = 1.0E1
 	
 	# material properties selected for 304 stainless steel
     density = 7930.0
@@ -1089,10 +1097,10 @@ if __name__ == "__main__":
     #thickness = jnp.full((num_elems,), 1.0)
     #scalar_param = 0.5
     #hickness0 = scalar_param * jnp.ones(num_elems)
-    thickness =  1.0
+    #thickness =  1.0
     thickness0 = thickness 
 
-
+    
 
     # Initialize the problem with fixed parameters
     params, state = init_problem(
@@ -1105,9 +1113,10 @@ if __name__ == "__main__":
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
+    #max_time = 1.0E-01
     max_time = 5.0E-01
-    #max_time = 5.0E-02
-
+    #max_time = 5.0E-03
+    
     max_time = float(max_time)
     
     time_step = 5.0E-08
@@ -1124,35 +1133,54 @@ if __name__ == "__main__":
     results = _solve(params, state, thickness0, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     jax.debug.print("allow_damage in main: {a}", a=allow_damage)
     
+    print("thickness inputted: ", thickness0)
+    
+    #print("damage: ", results[7])
+    
     #print("displacement values: ", results[0])
     disp = results[0]
-    #print("disp shape: ", disp.shape)
-    #print("disp values at final time step: ", disp[-1])
-    
     fig, ax = plt.subplots()
     ax.plot(params.pd_nodes, disp, 'k.')
     ax.set_xlabel("Node Position")
     ax.set_ylabel("Displacement")
     ax.set_title("Displacement vs Node Position (Forward Problem)")
-    #ax.set_ylim(-40,40)
+    ax.set_ylim(-2.5,2.5)
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness)
-    print("damage: ", results.damage[-1])
-
-    
     
 
 ##################################################
 # # Now using Optax to maximize
 # random array of thickness values for initial thickness 
-#key = jax.random.PRNGKey(np.random.randint(0, 1_000_000))  # Use a random seed each run
+#key = jax.random.PRNGKey(0) 
 #shape = (params.num_nodes,)  # Example shape
 #param = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.5)
 
-# scalar param
+# scalar param and starting array of all 1's, optimizing thickness at every node
 #param = jnp.array([1.0])
 param = jnp.full((num_elems,), 1.0)
+
+# optimizing only half of bar, such that thickness is symmetric
+num_nodes = params.num_nodes
+mid_index = num_nodes // 2  # midpoint of bar
+
+no_damage_region_left = params.no_damage_region_left
+no_damage_region_right = params.no_damage_region_right
+
+middle_region = jnp.arange(jnp.max(no_damage_region_left) + 1, jnp.min(no_damage_region_right))
+print("middle region: ", middle_region)
+
+# region to optimize: left side *outside* no_damage_region
+optimizable_indices = jnp.arange(0, mid_index)
+optimizable_indices = optimizable_indices[~jnp.isin(optimizable_indices, no_damage_region_left)]
+
+print("no_damage_region_left: ", no_damage_region_left)
+print("no_damage_region_right: ", no_damage_region_right)
+print("optimizable_indices: ", optimizable_indices)
+
+param = jnp.ones((optimizable_indices.size,)) 
+print("initial param: ", param)
 
 loss_to_plot = []
 damage_to_plot = []
@@ -1163,7 +1191,7 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 10.0
-num_steps = 5
+num_steps = 10
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1192,6 +1220,27 @@ def clamp_params(grads):
 	#jax.debug.print("grad after clamping: {t}", t=grads)
 	return grads
 
+def make_symmetric_thickness(left_params):
+    """Return full symmetric thickness array of shape (num_nodes,)."""
+    left_fixed_thickness = 3.0
+    right_fixed_thickness = 3.0
+
+    # Mirror optimized section
+    mirrored = left_params[::-1]
+    middle_full = jnp.concatenate([left_params, mirrored])
+
+    # Construct full bar thickness
+    full_thickness = jnp.ones((num_nodes,))  # shape (num_nodes,)
+
+    # Insert middle region
+    full_thickness = full_thickness.at[middle_region].set(middle_full)
+
+    # Fix the outer ends
+    full_thickness = full_thickness.at[no_damage_region_left].set(left_fixed_thickness)
+    full_thickness = full_thickness.at[no_damage_region_right].set(right_fixed_thickness)
+
+    return full_thickness
+
 # Optimization loop
 for step in range(num_steps):
 	def true_fn(thickness):
@@ -1202,87 +1251,41 @@ for step in range(num_steps):
 		jax.debug.print("Non-finite thickness detected: {t}", t=thickness)
 		return thickness
 
-	#jax.debug.print("Initial thickness: {t}", t=param)
+	full_thickness = make_symmetric_thickness(param)
 	assert jnp.all(jnp.isfinite(param)), "Initial thickness contains NaNs!"
-	
 
-	#loss_val, grads = loss_and_grad(params, state, param, allow_damage=allow_damage, max_time=max_time)
-	(loss_val, (strain_energy, damage)), grads = loss_and_grad(params, state, param, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
+	# enforce fixed region if needed
+	full_thickness = full_thickness.at[no_damage_region_left].set(1.0)
+	full_thickness = full_thickness.at[no_damage_region_right].set(1.0)
 
-	# Calling clamp function to restrict gradient
-	#grads = clamp_params(grads)
-
-	jax.debug.print(
-		"Step {step}, loss: {loss}, thickness: {thickness}, grads: {grads}",
-		step=step, loss=loss_val, thickness=param, grads=grads
+	# Compute loss and gradients (grads wrt half param)
+	(loss_val, (strain_energy, damage)), grads_full = loss_and_grad(
+		params, state, full_thickness, 
+		forces_array=forces_array, allow_damage=allow_damage, max_time=max_time
 	)
 
+	# Extract grads only for half region
+	grads = grads_full[optimizable_indices]
+
 	updates, opt_state = optimizer.update(grads, opt_state, param)
-
 	param = optax.apply_updates(param, updates)
-	#param = jnp.maximum(param, 1e-6) # Ensure thickness stays positive
-	param = jnp.abs(param)
-	min_thickness_allowed = 0.30
-	param = jnp.clip(param, min_thickness_allowed, None)
-	
-	#min_thickness = 1.0
-	#param = param.at[params.no_damage_region_left].set(min_thickness)
-	#param = param.at[params.no_damage_region_right].set(min_thickness)
+	param = jnp.clip(jnp.abs(param), 0.3, None)
 
-	print("damage in optimization loop: ", damage[-1])
 	loss_to_plot.append(loss_val)
-	params_to_plot = param * jnp.ones(params.num_nodes)
-	damage_to_plot.append(damage)
 	strain_energy_to_plot.append(strain_energy)
+	damage_to_plot.append(damage)
+
+	jax.debug.print("Step {s}, loss={l}, thickness={t}",
+					s=step, l=loss_val, t=full_thickness)
+	print("damage in optimization loop: ", damage[-1])
+  
+	#loss_to_plot.append(loss_val)
+	#params_to_plot = param * jnp.ones(params.num_nodes)
+	#damage_to_plot.append(damage)
+	#strain_energy_to_plot.append(strain_energy)
 
 	##print(f"Updated param: {param}")
 	#print("updated param: ", param)
 	#if step % 20 == 0:
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
-
-'''
-##################################################
-# Animation of results
-
-forces_to_apply = results[8]
-damages = results[7]
-displacements = results[9]
-
-fig, ax = plt.subplots()
-# Create an empty scatter instead of a line
-sc = ax.scatter([], [], c=[], cmap="viridis", vmin=0, vmax=1, s=40)
-
-ax.set_xlabel("Node Position")
-ax.set_ylabel("Displacement")
-ax.set_title("Displacement vs Node Position (Animated)")
-ax.set_xlim(-5, 5)
-ax.set_ylim(-3.0E3 - 0.1 * 3.0E3, 3.0E3 + 0.1 * 3.0E3)
-
-# add colorbar
-cbar = plt.colorbar(sc, ax=ax)
-cbar.set_label("Damage")
-
-def init():
-    sc.set_offsets(np.empty((0, 2)))   # empty coords with correct shape
-    sc.set_array(np.array([]))         # empty color array
-    return sc,
-
-def update(frame):
-    disp = displacements[frame]      # shape (num_nodes,)
-    dmg  = damages[frame]            # same shape as disp
-    nodes = params.pd_nodes          # shape (num_nodes,)
-
-    # scatter wants Nx2 array for coordinates
-    coords = np.column_stack((nodes, disp))
-    sc.set_offsets(coords)
-    sc.set_array(dmg)  # colors from damage
-
-    ax.set_title(f"Displacement, Force={forces_to_apply[frame]/1e13:.3f}e13")
-    return sc,
-
-ani = animation.FuncAnimation(fig, update, frames=len(displacements), init_func=init, blit=False, repeat=False)
-
-plt.show()
-ani.save("displacements.gif", writer="imagemagick", fps=2)
-'''
