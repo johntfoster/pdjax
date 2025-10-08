@@ -1058,7 +1058,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 1.0E10
+    prescribed_force = 5.0E9
 
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1113,8 +1113,8 @@ if __name__ == "__main__":
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
-    #max_time = 1.0E-01
-    max_time = 5.0E-01
+    max_time = 1.0E-01
+    #max_time = 1.0
     #max_time = 5.0E-03
     
     max_time = float(max_time)
@@ -1144,7 +1144,7 @@ if __name__ == "__main__":
     ax.set_xlabel("Node Position")
     ax.set_ylabel("Displacement")
     ax.set_title("Displacement vs Node Position (Forward Problem)")
-    ax.set_ylim(-2.5,2.5)
+    #ax.set_ylim(-2.5,2.5)
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness)
@@ -1190,8 +1190,8 @@ damage = []
 # when use strain energy density as loss, use smaller
 #learning_rate = 1E-1
 
-learning_rate = 10.0
-num_steps = 10
+learning_rate = 1.0
+num_steps = 20
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1289,3 +1289,74 @@ for step in range(num_steps):
 	#if step % 20 == 0:
 	#    ##print(f"Step {step}, loss: {loss_val}")
 	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
+ 
+'''
+########## Plotting results ##########
+ # Assuming results.damage[-1] is the damage array at the final time step
+# (shape should match params.pd_nodes, e.g., (num_nodes,))
+#damage_final = damage[-1]
+damage_final = results.damage[-1]
+
+fig, ax = plt.subplots()
+
+# Change from ax.plot to ax.scatter for color variation
+#sc = ax.scatter(params.pd_nodes, results.disp_array[-1], c=damage_final, cmap="viridis", s=40, edgecolor='k', vmin=0, vmax=1)
+sc = ax.scatter(params.pd_nodes, disp, c=damage_final, cmap="viridis", s=40, edgecolor='k', vmin=0, vmax=1)
+
+ax.set_xlabel("Node Position")
+ax.set_ylabel("Displacement")
+ax.set_title("Displacement vs Node Position (Forward Problem)")
+#ax.set_ylim(-0.5,0.5) 
+ax.set_ylim(-1.0, 1.0) 
+
+# Add colorbar
+cbar = plt.colorbar(sc, ax=ax)
+cbar.set_label("Damage")
+
+plt.tight_layout()
+plt.show()
+
+print("thickness: ", thickness)
+
+######### Animation of results ################################
+forces_to_apply = results[8]
+damages = results[7]
+displacements = results[9]
+
+fig, ax = plt.subplots()
+# Create an empty scatter instead of a line
+sc = ax.scatter([], [], c=[], cmap="viridis", vmin=0, vmax=1, s=40)
+
+ax.set_xlabel("Node Position")
+ax.set_ylabel("Displacement")
+ax.set_title("Displacement vs Node Position (Animated)")
+ax.set_xlim(-5, 5)
+ax.set_ylim(-3.0E3 - 0.1 * 3.0E3, 3.0E3 + 0.1 * 3.0E3)
+
+# add colorbar
+cbar = plt.colorbar(sc, ax=ax)
+cbar.set_label("Damage")
+
+def init():
+    sc.set_offsets(np.empty((0, 2)))   # empty coords with correct shape
+    sc.set_array(np.array([]))         # empty color array
+    return sc,
+
+def update(frame):
+    disp = displacements[frame]      # shape (num_nodes,)
+    dmg  = damages[frame]            # same shape as disp
+    nodes = params.pd_nodes          # shape (num_nodes,)
+
+    # scatter wants Nx2 array for coordinates
+    coords = np.column_stack((nodes, disp))
+    sc.set_offsets(coords)
+    sc.set_array(dmg)  # colors from damage
+
+    ax.set_title(f"Displacement, Force={forces_to_apply[frame]/1e13:.3f}e13")
+    return sc,
+
+ani = animation.FuncAnimation(fig, update, frames=len(displacements), init_func=init, blit=False, repeat=False)
+
+plt.show()
+ani.save("displacements.gif", writer="imagemagick", fps=2)
+'''
