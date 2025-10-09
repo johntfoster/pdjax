@@ -151,15 +151,15 @@ def init_problem(bar_length: float = 20.0,
 	#:The node indices of the boundary region at the left end of the bar
 	li = 0
 	left_bc_mask = neighborhood[li] != li
-	left_bc_region = neighborhood[li][left_bc_mask]
+	#left_bc_region = neighborhood[li][left_bc_mask]
 
 	#:The node indices of the boundary region at the right end of the bar
 	ri = num_nodes - 1
 	right_bc_mask = neighborhood[ri] != ri
-	right_bc_region = neighborhood[ri][right_bc_mask]
+	#right_bc_region = neighborhood[ri][right_bc_mask]
 
-	#left_bc_region = jnp.asarray(tree.query_ball_point(pd_nodes[0, None], r=(2.0 * horizon ), p=2, eps=0.0)).sort()
-	#right_bc_region = jnp.asarray(tree.query_ball_point(pd_nodes[-1, None], r=(2.0 * horizon ), p=2, eps=0.0)).sort()
+	left_bc_region = jnp.asarray(tree.query_ball_point(pd_nodes[0, None], r=(2.0 * horizon ), p=2, eps=0.0)).sort()
+	right_bc_region = jnp.asarray(tree.query_ball_point(pd_nodes[-1, None], r=(2.0 * horizon ), p=2, eps=0.0)).sort()
 
 	if prescribed_velocity is not None:
 		left_bc_region = jnp.asarray(tree.query_ball_point(pd_nodes[0, None], r=(horizon + np.max(lengths) / 2.0), p=2, eps=0.0)).sort()
@@ -1010,12 +1010,12 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	#Calling compute damage 
 	#jax.debug.print("inf state: {i}", i=output_vals[5])
-	loss_value = damage.sum()
+	# loss_value = damage.sum()
 
 
 	#### Analyzing different loss functions ####
 	# No thickness dependence
-	# loss_value = strain_energy_norm / normalization_factor
+	loss_value = strain_energy_norm / normalization_factor
 
 	# With thickness dependence, penalize for total thickness
 	#loss_value = strain_energy_density / normalization_factor + thickness_vector.sum()
@@ -1190,7 +1190,7 @@ damage = []
 # when use strain energy density as loss, use smaller
 #learning_rate = 1E-1
 
-learning_rate = 1.0
+learning_rate = 10.0
 num_steps = 20
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
@@ -1206,6 +1206,9 @@ max_time = 5.0E-03
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
 opt_state = optimizer.init(param)
+
+# Optimization loop
+damage_threshold = 0.5
 
 # Loss function (already defined as 'loss')
 #loss_and_grad = jax.value_and_grad(loss, argnums=2)
@@ -1279,17 +1282,8 @@ for step in range(num_steps):
 					s=step, l=loss_val, t=full_thickness)
 	print("damage in optimization loop: ", damage[-1])
   
-	#loss_to_plot.append(loss_val)
-	#params_to_plot = param * jnp.ones(params.num_nodes)
-	#damage_to_plot.append(damage)
-	#strain_energy_to_plot.append(strain_energy)
 
-	##print(f"Updated param: {param}")
-	#print("updated param: ", param)
-	#if step % 20 == 0:
-	#    ##print(f"Step {step}, loss: {loss_val}")
-	#    print(f"Step {step}, loss: {loss_val}, param: {param}")
- 
+
 '''
 ########## Plotting results ##########
  # Assuming results.damage[-1] is the damage array at the final time step
