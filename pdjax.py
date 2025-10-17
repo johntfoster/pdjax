@@ -1008,7 +1008,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	strain_energy = output_vals[11]
  
 	# Extract damage from output_vals
-	damage = output_vals[7]
+	damage = output_vals[7][-1]
 
 	# Calc strain energy density
 	#total_volume = jnp.sum(vol_state)
@@ -1037,9 +1037,10 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	#Calling compute damage 
 	#jax.debug.print("inf state: {i}", i=output_vals[5])
-	loss_value = damage.sum()
-	#loss_value = damage.mean() * 1.0E3
+	#loss_value = damage.sum()
  
+	#loss_value = damage.mean() * 1.0E3
+	loss_value = jnp.linalg.norm(damage, ord=1)
     # Weights for balancing mean and max (adjust w_mean and w_max based on your priorities)
 	#w_sum = 0.5 # Weight for mean damage (e.g., 70% focus on overall average)
 	#w_max = 0.5  # Weight for max damage (e.g., 30% focus on peaks)
