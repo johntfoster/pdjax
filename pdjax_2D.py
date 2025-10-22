@@ -82,6 +82,7 @@ class PDState(NamedTuple):
 	disp_array: jnp.ndarray
 	velo_array: jnp.ndarray
 	strain_energy: jnp.ndarray
+	density_field_final: jnp.ndarray
 	time: float
 
 
@@ -141,7 +142,7 @@ def init_problem(bar_length: float = 20.0,
 		density_field = jnp.asarray(density_field)
 	else:
 		raise ValueError("Invalid density input.")
-
+	jax.debug.print("density_field in init: {d}", d=density_field)
 
 	# kdtree setup
 	tree = scipy.spatial.cKDTree(pd_nodes)
@@ -260,6 +261,7 @@ def init_problem(bar_length: float = 20.0,
 		velo_array=jnp.zeros((num_nodes, 2)),
 		strain_energy=0.0,
 		damage=jnp.zeros(num_nodes),
+		density_field_final=density_field,
 		time=0.0
 	)
 
@@ -667,17 +669,17 @@ def compute_internal_force(params, disp, vol_state, rev_vol_state, inf_state, un
 	pd_nodes = params.pd_nodes
 
 	#jax.debug.print("disp zeros? {z}", z=jnp.any(disp == 0))
-	
+	bond_density = density_field[:, None] * density_field[params.neighborhood]	
 
 	##### return bond_strain_energy #####
 	force_state_x, force_state_y, inf_state, bond_strain_energy = compute_force_state_LPS(params, disp, vol_state, inf_state, allow_damage)
 
     # Integrate nodal forces for x and y components separately
-	force_x = (force_state_x * vol_state * density_field).sum(axis=1)
-	force_x = force_x.at[neigh].add(-force_state_x * rev_vol_state)
+	force_x = (force_state_x * vol_state * bond_density).sum(axis=1)
+	force_x = force_x.at[neigh].add(-force_state_x * rev_vol_state * bond_density)
 
-	force_y = (force_state_y * vol_state * density_field).sum(axis=1)
-	force_y = force_y.at[neigh].add(-force_state_y * rev_vol_state)
+	force_y = (force_state_y * vol_state * bond_density).sum(axis=1)
+	force_y = force_y.at[neigh].add(-force_state_y * rev_vol_state * bond_density)
 
 	# Stack into 2D force array: (num_nodes, 2)
 	force = jnp.stack([force_x, force_y], axis=-1)
@@ -842,7 +844,6 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     
     # Reset forces array
     forces_array = jnp.full((num_steps,), 0.0)
-    jax.debug.print("Forces array after reset: {f}", f=forces_array.shape)
 
 	# Clamp to avoid divide-by-zero or log(0) NaNs
     vol_state = jnp.maximum(vol_state, EPS)
@@ -904,23 +905,29 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
             )
         )
     )
-
-
+    
+    
+    density_field_final = vals_returned[6]
+    jax.debug.print("density field in solve: {d}", d=density_field_final)
+    
     forces_saved = vals_returned[10][mask_all]
     #jax.debug.print("forces_saved after sim: {f}", f=forces_saved)
-    jax.debug.print("forces_saved after sim: {f}", f=forces_saved.shape)
+    jax.debug.print("forces_saved after sim: {f}", f=forces_saved)
 
     damage_saved = vals_returned[9][mask_all]
     #jax.debug.print("damage_saved after sim: {d}", d=damage_saved)
     #jax.debug.print("damage_saved after sim: {d}", d=damage_saved.shape)
+    jax.debug.print("damage saved after sim: {f}", f=damage_saved)
     
     
     disp_saved = vals_returned[11][mask_all]
+    jax.debug.print("disp_saved after sim: {f}", f=disp_saved)
 
     vel_saved =  vals_returned[12][mask_all]
+    jax.debug.print("vel_saved after sim: {f}", f=vel_saved)
 
     return PDState(disp=vals_returned[0], vel=vals_returned[1], acc=vals_returned[2], vol_state=vals_returned[3], rev_vol_state=vals_returned[4], influence_state=vals_returned[5],
-                   undamaged_influence_state=vals_returned[7], damage=damage_saved, forces_array=forces_saved, disp_array=disp_saved, velo_array=vel_saved, strain_energy=vals_returned[12], time=vals_returned[13])
+                   undamaged_influence_state=vals_returned[7], damage=damage_saved, forces_array=forces_saved, disp_array=disp_saved, velo_array=vel_saved, strain_energy=vals_returned[12], density_field_final=density_field_final, time=vals_returned[13])
 
 ### put wrapper on solve
 #@partial(jax.jit, static_argnums=(3,4))
@@ -1145,7 +1152,7 @@ if __name__ == "__main__":
     thickness0 = thickness 
 
     
-    density_field = 1.0
+    density_field = 1.0 
 
     
 
@@ -1161,7 +1168,7 @@ if __name__ == "__main__":
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
-    max_time = 1.0E-03
+    max_time = 1.0E-02
     #max_time = 1.0
     #max_time = 5.0E-03
     
@@ -1172,19 +1179,18 @@ if __name__ == "__main__":
     
     #forces_array = jnp.zeros(params.num_nodes)    
     forces_array = jnp.full((num_steps,), 0.0)
+    density_field = jnp.ones(params.num_nodes)
 
-    print("forces_array shape before forward prob: ", forces_array.shape)
+
     
     #key = jax.random.PRNGKey(0)  # Seed for reproducibility
     #shape = (params.num_nodes,)  # Example shape
     #param = jax.random.uniform(key, shape=shape, minval=0.5, maxval=1.2)
 
+    density_field = jnp.ones(params.num_nodes)
 
     # Solve the problem with initial thickness
     thickness0 = ensure_thickness_vector(thickness0, params.num_nodes)
-    print("thickness: ", thickness0)
-    print("thickness shape: ", thickness0.shape)
-    print("num_elems: ", num_elems)
     results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     jax.debug.print("allow_damage in main: {a}", a=allow_damage)
     
