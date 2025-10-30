@@ -254,8 +254,9 @@ def init_problem(bar_length: float = 20.0,
 	#jax.debug.print("vol_state in init: {v}",v=vol_state)
 
 	influence_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
-	#influence_state = influence_state.at[,19:21].set(0.0)
 	undamaged_influence_state = influence_state.copy()
+	influence_state = influence_state.at[18:23,19:21].set(0.0)
+
 	
 	undamaged_influence_state_left = influence_state.at[no_damage_region_left, :].get()
 	undamaged_influence_state_right = influence_state.at[no_damage_region_right, :].get()
@@ -770,8 +771,8 @@ def solve_one_step(params, vals, allow_damage:bool):
 
 
 	# TODO: Solve for stable time step
-	time_step = 5.0E-09
-	#time_step = 2.50E-08
+	#time_step = 5.0E-09
+	time_step = 2.50E-08
 	#time_step = 1.0E-07
 	#time_step = 7.5E-08
 
@@ -824,6 +825,8 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#jax.debug.print("inf_state in solve_one_step: {s}", s=inf_state)
 	#jax.debug.print("vol_state in solve_one_step: {s}", s=vol_state)
 	#jax.debug.print("undamaged_inf_state in solve_one_step: {s}", s=undamaged_inf_state)
+	#jax.debug.print("inf_state in solve_one_step: {s}", s=inf_state[18:23,19:21])
+	#jax.debug.print("undamaged_inf_state in solve_one_step: {s}", s=undamaged_inf_state[18:23,19:21])
 
 	damage = compute_damage(vol_state, inf_state, undamaged_inf_state)
 	#jax.debug.print("Damage sum at time {t}: {d}", t=time, d=jnp.sum(damage_updated))
@@ -860,8 +863,8 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, allow_da
 
     EPS = 1.0e-12  # Minimum safe volume to avoid NaNs
     
-    time_step = 5.0E-09
-    #time_step = 2.50E-08
+    #time_step = 5.0E-09
+    time_step = 2.50E-08
     #time_step = 1.0E-07
     #time_step = 7.5E-08
 
@@ -1117,7 +1120,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 1.0E5
+    prescribed_force = 1.0E7
 
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1178,7 +1181,7 @@ if __name__ == "__main__":
 	
     #max_time = 1.0E-03
     #max_time = 1.0
-    max_time =  1.0E-03
+    max_time =  1.0E-02
     
     max_time = float(max_time)
     
