@@ -514,72 +514,29 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	pos_x = ref_pos[:, 0]  # Shape: (num_nodes,)
 	pos_y = ref_pos[:, 1]  # Shape: (num_nodes,)
 
-    # Compute deformed positions using PD.py-style syntax
-	def_x = pos_x + disp_x  # Shape: (num_nodes,)
-	def_y = pos_y + disp_y  # Shape: (num_nodes,)
 
-	#jax.debug.print("def_x min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_x), mean=jnp.mean(def_x), mx=jnp.max(def_x))
-	#jax.debug.print("def_y min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_y), mean=jnp.mean(def_y), mx=jnp.max(def_y))
+	# Compute deformed positions
+	def_x = pos_x + disp_x
+	def_y = pos_y + disp_y
 
-    # Reconstruct def_pos for compatibility (optional, but keeps existing logic intact)
-	def_pos = jnp.stack([def_x, def_y], axis=-1)  # Shape: (num_nodes, 2)
+	# Compute bond-relative vectors to neighbors
+	def_pos_x = def_x[neigh] - pos_x[:, None]   # relative to reference positions
+	def_pos_y = def_y[neigh] - pos_y[:, None]
+	def_state = jnp.stack([def_pos_x, def_pos_y], axis=-1)
 
-   # Compute deformation state (reconstructed from x/y components)
-	#def_pos_x = def_x[neigh] - def_x[:, None]  # Relative x-displacements: (num_nodes, max_neighbors)
-	#def_pos_y = def_y[neigh] - def_y[:, None]  # Relative y-displacements: (num_nodes, max_neighbors)
-
-	def_pos_x = disp_x[neigh] - disp_x[:, None]
-	def_pos_y = disp_y[neigh] - disp_y[:, None]
-
-	#def_pos_x = def_x[neigh] - pos_x[:, None]   # relative to reference positions
-	#def_pos_y = def_y[neigh] - pos_y[:, None]
-
-	def_state = jnp.stack([def_pos_x, def_pos_y], axis=-1)  # Shape: (num_nodes, max_neighbors, 2)
-	#jax.debug.print("def_pos_x min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_pos_x), mean=jnp.mean(def_pos_x), mx=jnp.max(def_pos_x))
-	#jax.debug.print("def_pos_y min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_pos_y), mean=jnp.mean(def_pos_y), mx=jnp.max(def_pos_y))
-
-    # jax.debug.print("def_state finite: {b}", b=jnp.all(jnp.isfinite(def_state)))
-    # jax.debug.print("def_state zeros? {z}", z=jnp.any(def_state == 0))
-
-    # Compute deformation magnitude state
-	#def_mag_state = jnp.sqrt(jnp.maximum(jnp.sum(def_pos_x * def_pos_x + def_pos_y * def_pos_y), 1e-24))
-	#def_mag_state = jnp.sqrt(jnp.maximum(def_pos_x**2 + def_pos_y**2, 1e-24))  # (num_nodes, max_neighbors) - CORRECT	
-	#def_mag_state = jnp.sqrt(jnp.maximum(def_pos_x * def_pos_x + def_pos_y * def_pos_y, 1e-24))
+	# Compute magnitude and unit vectors
 	def_mag_state = jnp.linalg.norm(def_state, axis=-1)
-
-	#jax.debug.print("def_mag_state shape {shape} min={mn}, mean={mean}, max={mx}", shape=def_mag_state.shape, mn=jnp.min(def_mag_state), mean=jnp.mean(def_mag_state), mx=jnp.max(def_mag_state))
-
-    # Compute deformation unit state
 	eps = 1e-10
-	def_unit_state = def_state/def_mag_state[..., None]
-	def_unit_state = jnp.where((def_mag_state > eps)[..., None], def_state / def_mag_state[..., None], 0.0)
-	def_unit_state_x = def_pos_x / def_mag_state
-	def_unit_state_y = def_pos_y / def_mag_state	
-	
-
-	# Compute deformation unit state safely per bond
-	eps = 1e-10
-	# def_state shape: (num_nodes, max_neighbors, 2)
-	def_unit_state = jnp.where((def_mag_state > eps)[..., None], def_state / def_mag_state[..., None], 0.0)
-
-	# If you want separate x/y unit components (optional)
+	def_unit_state = jnp.where((def_mag_state > eps)[..., None],
+							def_state / def_mag_state[..., None],
+							0.0)
 	def_unit_state_x = jnp.where(def_mag_state > eps, def_pos_x / def_mag_state, 0.0)
 	def_unit_state_y = jnp.where(def_mag_state > eps, def_pos_y / def_mag_state, 0.0)
 
-	#jax.debug.print("def_mag_state min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_mag_state), mean=jnp.mean(def_mag_state), mx=jnp.max(def_mag_state))
-	#jax.debug.print("ref_mag_state min={mn}, mean={mean}, max={mx}", mn=jnp.min(ref_mag_state), mean=jnp.mean(ref_mag_state), mx=jnp.max(ref_mag_state))
-
-
-	# Compute scalar extension state
+	# Scalar extension and stretch
 	exten_state = def_mag_state - ref_mag_state
-	#jax.debug.print("exten_state min={mn}, mean={mean}, max={mx}", mn=jnp.min(exten_state), mean=jnp.mean(exten_state), mx=jnp.max(exten_state))
-    
-    # Compute stretch
-	stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
-	#jax.debug.print("stretch min={mn}, max={mx}", mn=jnp.min(stretch), mx=jnp.max(stretch))
-	#jax.debug.print("stretch min={s1}, max={s2}", s1=jnp.min(stretch), s2=jnp.max(stretch))
+	stretch = jnp.where(ref_mag_state > 1e-16, exten_state / ref_mag_state, 0.0)
 	#jax.debug.print("stretch min={mn}, mean={mean}, max={mx}", mn=jnp.min(stretch), mean=jnp.mean(stretch), mx=jnp.max(stretch))
-
 
     # Apply critical stretch fracture criteria to update inf_state
 	def damage_branch(inf_state):
@@ -1279,7 +1236,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 1.0E10
+    prescribed_force = 1.0E2
 
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
