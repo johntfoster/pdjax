@@ -169,6 +169,7 @@ def init_problem(bar_length: float = 20.0,
 	neighborhood = jnp.delete(neighborhood, 0, 1)
 
 	reference_position_state = pd_nodes[neighborhood] - pd_nodes[:, None]
+	reference_magnitude_state = jnp.linalg.norm(reference_position_state, axis=-1)  # Update to match trimmed positions
 	reference_magnitude_state = jnp.where(reference_magnitude_state == np.inf, 0.0, reference_magnitude_state)
 	#jax.debug.print("reference_magnitude_state = {r}", r=reference_magnitude_state)
 
@@ -257,20 +258,24 @@ def init_problem(bar_length: float = 20.0,
 	influence_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
 	undamaged_influence_state = influence_state.copy()
 
+
 	# Define the node indices for the 4x4 middle chunk
 	#node_indices = jnp.array([139, 140, 141, 142, 179, 180, 181, 182, 219, 220, 221, 222, 259, 260, 261, 262])
-	node_indices = jnp.array([
-    139, 140, 141, 142,  # Row 3, cols 19-22
-    179, 180, 181, 182,  # Row 4, cols 19-22
-    219, 220, 221, 222,  # Row 5, cols 19-22
-    259, 260, 261, 262,  # Row 6, cols 19-22
-    299, 300, 301, 302,  # Row 7, cols 19-22
-    339, 340, 341, 342,  # Row 8, cols 19-22
-    379, 380, 381, 382])   # Row 9, cols 19-22 (top row)
+	node_indices = jnp.array([259, 260, 261, 262, 299, 300, 301, 302, 339, 340, 341, 342, 379, 380, 381, 382])
+	#node_indices = jnp.array([
+    #139, 140, 141, 142,  # Row 3, cols 19-22
+    #179, 180, 181, 182,  # Row 4, cols 19-22
+    #219, 220, 221, 222,  # Row 5, cols 19-22
+    #259, 260, 261, 262,  # Row 6, cols 19-22
+    #299, 300, 301, 302,  # Row 7, cols 19-22
+    #339, 340, 341, 342,  # Row 8, cols 19-22
+    #379, 380, 381, 382])   # Row 9, cols 19-22 (top row)
 
 	# Set influence state to 0 for all neighbors of these nodes
-	#influence_state = influence_state.at[node_indices, :].set(0.0)
+	influence_state = influence_state.at[node_indices, :].set(0.0)
 	#influence_state = influence_state.at[18:23,19:24].set(0.0)
+
+
 	
 	undamaged_influence_state_left = influence_state.at[no_damage_region_left, :].get()
 	undamaged_influence_state_right = influence_state.at[no_damage_region_right, :].get()
@@ -514,29 +519,85 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	pos_x = ref_pos[:, 0]  # Shape: (num_nodes,)
 	pos_y = ref_pos[:, 1]  # Shape: (num_nodes,)
 
+    # Compute deformed positions using PD.py-style syntax
+	def_x = pos_x + disp_x  # Shape: (num_nodes,)
+	def_y = pos_y + disp_y  # Shape: (num_nodes,)
 
-	# Compute deformed positions
-	def_x = pos_x + disp_x
-	def_y = pos_y + disp_y
+	#jax.debug.print("def_x min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_x), mean=jnp.mean(def_x), mx=jnp.max(def_x))
+	#jax.debug.print("def_y min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_y), mean=jnp.mean(def_y), mx=jnp.max(def_y))
 
-	# Compute bond-relative vectors to neighbors
-	def_pos_x = def_x[neigh] - pos_x[:, None]   # relative to reference positions
-	def_pos_y = def_y[neigh] - pos_y[:, None]
-	def_state = jnp.stack([def_pos_x, def_pos_y], axis=-1)
+    # Reconstruct def_pos for compatibility (optional, but keeps existing logic intact)
+	def_pos = jnp.stack([def_x, def_y], axis=-1)  # Shape: (num_nodes, 2)
 
-	# Compute magnitude and unit vectors
-	def_mag_state = jnp.linalg.norm(def_state, axis=-1)
+   # Compute deformation state (reconstructed from x/y components)
+	#def_pos_x = def_x[neigh] - def_x[:, None]  # Relative x-displacements: (num_nodes, max_neighbors)
+	#def_pos_y = def_y[neigh] - def_y[:, None]  # Relative y-displacements: (num_nodes, max_neighbors)
+
+	def_pos_x = disp_x[neigh] - disp_x[:, None]
+	def_pos_y = disp_y[neigh] - disp_y[:, None]
+
+	#jax.debug.print("def_pos_x min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_pos_x), mean=jnp.mean(def_pos_x), mx=jnp.max(def_pos_x))
+	#jax.debug.print("def_pos_y min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_pos_y), mean=jnp.mean(def_pos_y), mx=jnp.max(def_pos_y))
+
+	#def_pos_x = def_x[neigh] - pos_x[:, None]   # relative to reference positions
+	#def_pos_y = def_y[neigh] - pos_y[:, None]
+	
+	def_state = jnp.stack([def_pos_x, def_pos_y], axis=-1)  # Shape: (num_nodes, max_neighbors, 2)
+	#jax.debug.print("def_state initially after stacking: min={mn}, max={mx}", mn=jnp.min(jnp.linalg.norm(def_state, axis=-1)), mx=jnp.max(jnp.linalg.norm(def_state, axis=-1)))
+
+	def_state = ref_pos_state + def_state  # Shape: (num_nodes, max_neighbors, 2)
+	#jax.debug.print("def_state after adding ref_pos_state: min={mn}, max={mx}", mn=jnp.min(jnp.linalg.norm(def_state, axis=-1)), mx=jnp.max(jnp.linalg.norm(def_state, axis=-1)))
+ 
+	#jax.debug.print("ref_pos_state assigned correctly: min={mn}, max={mx}", mn=jnp.min(jnp.linalg.norm(ref_pos_state, axis=-1)), mx=jnp.max(jnp.linalg.norm(ref_pos_state, axis=-1)))
+	#jax.debug.print("def_state assigned correctly: min={mn}, max={mx}", mn=jnp.min(jnp.linalg.norm(def_state, axis=-1)), mx=jnp.max(jnp.linalg.norm(def_state, axis=-1)))
+	#jax.debug.print("def_pos_x min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_pos_x), mean=jnp.mean(def_pos_x), mx=jnp.max(def_pos_x))
+	#jax.debug.print("def_pos_y min={mn}, mean={mean}, max={mx}", mn=jnp.min(def_pos_y), mean=jnp.mean(def_pos_y), mx=jnp.max(def_pos_y))
+
+    # Compute deformation magnitude state
+	#def_mag_state = jnp.sqrt(jnp.maximum(jnp.sum(def_pos_x * def_pos_x + def_pos_y * def_pos_y), 1e-24))
+	#def_mag_state = jnp.sqrt(jnp.maximum(def_pos_x**2 + def_pos_y**2, 1e-24))  # (num_nodes, max_neighbors) - CORRECT	
+	#def_mag_state = jnp.sqrt(jnp.maximum(def_pos_x * def_pos_x + def_pos_y * def_pos_y, 1e-24))
+	#def_mag_state = jnp.linalg.norm(def_state, axis=-1)
+
+	# Deformation magnitude state (current bond length)
+	def_mag_state = jnp.linalg.norm(def_state, axis=-1)  #
+	#jax.debug.print("def_mag_state min={mn}, max={mx}", mn=jnp.min(def_mag_state), mx=jnp.max(def_mag_state))
+	#jax.debug.print("def_mag_state shape {shape} min={mn}, mean={mean}, max={mx}", shape=def_mag_state.shape, mn=jnp.min(def_mag_state), mean=jnp.mean(def_mag_state), mx=jnp.max(def_mag_state))
+
+    # Compute deformation unit state
 	eps = 1e-10
-	def_unit_state = jnp.where((def_mag_state > eps)[..., None],
-							def_state / def_mag_state[..., None],
-							0.0)
+	def_unit_state = def_state/def_mag_state[..., None]
+	def_unit_state = jnp.where((def_mag_state > eps)[..., None], def_state / def_mag_state[..., None], 0.0)
+	def_unit_state_x = def_pos_x / def_mag_state
+	def_unit_state_y = def_pos_y / def_mag_state	
+	
+
+	# Compute deformation unit state safely per bond
+	eps = 1e-10
+	# def_state shape: (num_nodes, max_neighbors, 2)
+	def_unit_state = jnp.where((def_mag_state > eps)[..., None], def_state / def_mag_state[..., None], 0.0)
+
+	# If you want separate x/y unit components (optional)
 	def_unit_state_x = jnp.where(def_mag_state > eps, def_pos_x / def_mag_state, 0.0)
 	def_unit_state_y = jnp.where(def_mag_state > eps, def_pos_y / def_mag_state, 0.0)
 
-	# Scalar extension and stretch
+	#jax.debug.print("def_mag_state min={mn}, max={mx}", mn=jnp.min(def_mag_state), mx=jnp.max(def_mag_state))
+	#jax.debug.print("ref_mag_state min={mn}, max={mx}", mn=jnp.min(ref_mag_state), mx=jnp.max(ref_mag_state))
+
+	# Compute scalar extension state
 	exten_state = def_mag_state - ref_mag_state
-	stretch = jnp.where(ref_mag_state > 1e-16, exten_state / ref_mag_state, 0.0)
+	#jax.debug.print("exten_state min={mn}, mean={mean}, max={mx}", mn=jnp.min(exten_state), mean=jnp.mean(exten_state), mx=jnp.max(exten_state))
+	#jax.debug.print("Initial ref_mag_state min={mn}, max={mx}", mn=jnp.min(ref_mag_state), mx=jnp.max(ref_mag_state))
+	#jax.debug.print("Initial def_pos_x min={mn}, max={mx}", mn=jnp.min(def_pos_x), mx=jnp.max(def_pos_x))
+	#jax.debug.print("Initial def_state norm min={mn}, max={mx}", mn=jnp.min(jnp.linalg.norm(def_state, axis=-1)), mx=jnp.max(jnp.linalg.norm(def_state, axis=-1)))	
+
+    # Compute stretch
+	stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
+	#jax.debug.print("stretch min={mn}, max={mx}", mn=jnp.min(stretch), mx=jnp.max(stretch))
+	#jax.debug.print("stretch min={s1}, max={s2}", s1=jnp.min(stretch), s2=jnp.max(stretch))
 	#jax.debug.print("stretch min={mn}, mean={mean}, max={mx}", mn=jnp.min(stretch), mean=jnp.mean(stretch), mx=jnp.max(stretch))
+
+
 
     # Apply critical stretch fracture criteria to update inf_state
 	def damage_branch(inf_state):
@@ -784,7 +845,7 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 		li = 0
 		ri = num_nodes - 1
 		#ramp_force = smooth_ramp(time, t0=1.e-3, c=prescribed_force) 
-		ramp_force = smooth_ramp(time, t0=1.e-5, c=prescribed_force) 
+		ramp_force = smooth_ramp(time, t0=1.e-06, c=prescribed_force) 
 
 		# Compute the left boundary condition nodal forces
 		left_edge_mask = pd_nodes[:, 0] == jnp.min(pd_nodes[:, 0])
@@ -805,8 +866,11 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 
 		# Apply force per unit area on the edge
 		edge_length_per_node = params.dy  # Assuming uniform spacing
-		force_per_node = (ramp_force * edge_length_per_node * thickness[left_bc_nodes]) / denom_left
-		force = force.at[left_bc_nodes, 0].add(-force_per_node)  # x-direction pull
+		#force_per_node = (ramp_force * edge_length_per_node * thickness[left_bc_nodes]) / denom_left
+		#force = force.at[left_bc_nodes, 0].add(-force_per_node)  # x-direction pull
+		# Replace the existing force_per_node calculation
+		force_per_node = ramp_force / left_bc_region.shape[0]  # ~8.33e5 N for 12 nodes
+		force = force.at[left_bc_nodes, 0].add(-force_per_node)  # Pull left
 
 		# Compute the right boundary condition nodal forces
 		right_edge_mask = pd_nodes[:, 0] == jnp.max(pd_nodes[:, 0])
@@ -815,8 +879,11 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 
 		# Apply force per unit area on the edge
 		edge_length_per_node = params.dy  # Assuming uniform spacing
-		force_per_node = (ramp_force * edge_length_per_node * thickness[right_bc_nodes]) / denom_right
+		#force_per_node = (ramp_force * edge_length_per_node * thickness[right_bc_nodes]) / denom_right
 		force = force.at[right_bc_nodes, 0].add(force_per_node)  # x-direction pull
+		### debugging info ###
+		force_per_node = ramp_force / right_bc_region.shape[0]
+		force = force.at[right_bc_nodes, 0].add(force_per_node)  # Push right
 
 		# add:
 		#jax.debug.print("BC: force[min,max] = ({:.6e}, {:.6e})", jnp.min(force), jnp.max(force))
@@ -839,6 +906,7 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 
 	#jax.debug.print("returned force_x min={:e}, max={:e}", jnp.min(force[:,0]), jnp.max(force[:,0]))
 	#jax.debug.print("returned force_y min={:e}, max={:e}", jnp.min(force[:,1]), jnp.max(force[:,1]))
+	#jax.debug.print("Total force on left: {tf}", tf=force_per_node * left_bc_region.shape[0])
 
 	return force_x, force_y, inf_state, strain_energy, ramp_force, forces_array, damage
 
@@ -859,7 +927,8 @@ def solve_one_step(params, vals, allow_damage:bool):
 	# TODO: Solve for stable time step
 	#time_step = 5.0E-08
 	#time_step = 5.0E-07
-	time_step = 2.5E-08
+	#time_step = 2.5E-08
+	time_step = 1.0E-09
 	#time_step = 3.5E-08
 
 	num_steps = max_time / time_step
@@ -953,8 +1022,9 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
 
     #time_step = 5.0E-08
     #time_step = 5.0E-07
-    time_step = 2.5E-08
+    #time_step = 2.5E-08
     #time_step = 3.5E-08
+    time_step = 1.0E-09
 
     num_steps = int(max_time / time_step)
 
@@ -1236,7 +1306,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 1.0E2
+    prescribed_force = 1.0E5
 
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1295,13 +1365,13 @@ if __name__ == "__main__":
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
-    max_time = 1E-02
+    max_time = 1.0E-03
     #max_time = 1.0
     #max_time = 5.0E-03
     
     max_time = float(max_time)
     
-    time_step = 2.5E-08
+    time_step = 1.0E-09
     num_steps = int(max_time / time_step)
     
     #forces_array = jnp.zeros(params.num_nodes)    
@@ -1346,4 +1416,3 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
     
-
