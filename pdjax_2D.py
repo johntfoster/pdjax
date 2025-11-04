@@ -258,22 +258,23 @@ def init_problem(bar_length: float = 20.0,
 	influence_state = jnp.where(vol_state > 1.0e-16, 1.0, 0.0)
 	undamaged_influence_state = influence_state.copy()
 
-
 	# Define the node indices for the 4x4 middle chunk
 	#node_indices = jnp.array([139, 140, 141, 142, 179, 180, 181, 182, 219, 220, 221, 222, 259, 260, 261, 262])
-	node_indices = jnp.array([259, 260, 261, 262, 299, 300, 301, 302, 339, 340, 341, 342, 379, 380, 381, 382])
-	#node_indices = jnp.array([
-    #139, 140, 141, 142,  # Row 3, cols 19-22
-    #179, 180, 181, 182,  # Row 4, cols 19-22
-    #219, 220, 221, 222,  # Row 5, cols 19-22
-    #259, 260, 261, 262,  # Row 6, cols 19-22
-    #299, 300, 301, 302,  # Row 7, cols 19-22
-    #339, 340, 341, 342,  # Row 8, cols 19-22
-    #379, 380, 381, 382])   # Row 9, cols 19-22 (top row)
+	#node_indices = jnp.array([259, 260, 261, 262, 299, 300, 301, 302, 339, 340, 341, 342, 379, 380, 381, 382])
+	node_indices = jnp.array([
+    139, 140, 141, 142,  # Row 3, cols 19-22
+    179, 180, 181, 182,  # Row 4, cols 19-22
+    219, 220, 221, 222,  # Row 5, cols 19-22
+    259, 260, 261, 262,  # Row 6, cols 19-22
+    299, 300, 301, 302,  # Row 7, cols 19-22
+    339, 340, 341, 342,  # Row 8, cols 19-22
+    379, 380, 381, 382])   # Row 9, cols 19-22 (top row)
 
 	# Set influence state to 0 for all neighbors of these nodes
 	influence_state = influence_state.at[node_indices, :].set(0.0)
 	#influence_state = influence_state.at[18:23,19:24].set(0.0)
+
+
 
 
 	
@@ -593,7 +594,7 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 
     # Compute stretch
 	stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
-	#jax.debug.print("stretch min={mn}, max={mx}", mn=jnp.min(stretch), mx=jnp.max(stretch))
+	jax.debug.print("stretch min={mn}, max={mx}", mn=jnp.min(stretch), mx=jnp.max(stretch))
 	#jax.debug.print("stretch min={s1}, max={s2}", s1=jnp.min(stretch), s2=jnp.max(stretch))
 	#jax.debug.print("stretch min={mn}, mean={mean}, max={mx}", mn=jnp.min(stretch), mean=jnp.mean(stretch), mx=jnp.max(stretch))
 
@@ -928,7 +929,7 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#time_step = 5.0E-08
 	#time_step = 5.0E-07
 	#time_step = 2.5E-08
-	time_step = 1.0E-09
+	time_step = 5.0E-07
 	#time_step = 3.5E-08
 
 	num_steps = max_time / time_step
@@ -1020,11 +1021,11 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
 
     EPS = 1.0e-12  # Minimum safe volume to avoid NaNs
 
-    #time_step = 5.0E-08
+    time_step = 5.0E-07
     #time_step = 5.0E-07
     #time_step = 2.5E-08
     #time_step = 3.5E-08
-    time_step = 1.0E-09
+    #time_step = 1.0E-09
 
     num_steps = int(max_time / time_step)
 
@@ -1306,7 +1307,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 1.0E5
+    prescribed_force = 1.0E10
 
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1365,13 +1366,13 @@ if __name__ == "__main__":
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
-    max_time = 1.0E-03
+    #max_time = 1.0E-03
     #max_time = 1.0
-    #max_time = 5.0E-03
+    max_time = 1.0E-02
     
     max_time = float(max_time)
     
-    time_step = 1.0E-09
+    time_step = 5.0E-07
     num_steps = int(max_time / time_step)
     
     #forces_array = jnp.zeros(params.num_nodes)    
@@ -1416,3 +1417,4 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
     
+
