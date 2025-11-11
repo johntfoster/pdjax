@@ -80,7 +80,6 @@ class PDState(NamedTuple):
 	rev_vol_state: jnp.ndarray
 	influence_state: jnp.ndarray
 	undamaged_influence_state: jnp.ndarray
-	loss_damage: jnp.ndarray
 	damage: jnp.ndarray
 	forces_array: jnp.ndarray
 	disp_array: jnp.ndarray
@@ -311,7 +310,6 @@ def init_problem(bar_length: float = 20.0,
 		velo_array=jnp.zeros((num_nodes, 2)),
 		strain_energy=0.0,
 		damage=jnp.zeros(num_nodes),
-		loss_damage=jnp.zeros(num_nodes),
 		time=0.0
 	)
 
@@ -863,7 +861,7 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 @partial(jax.jit, static_argnums=(2,))
 def solve_one_step(params, vals, allow_damage:bool):
 
-	(disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, loss_damage, forces_array, disp_array, velo_array, strain_energy, time) = vals
+	(disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, forces_array, disp_array, velo_array, strain_energy, time) = vals
 	prescribed_velocity = params.prescribed_velocity
 	bar_length = params.bar_length
 	left_bc_region = params.left_bc_region
@@ -934,8 +932,6 @@ def solve_one_step(params, vals, allow_damage:bool):
 
 	velo_array = save_velo_if_needed(velo_array, vel_x, step_number)
 
-	loss_damage = compute_damage(vol_state, inf_state, undamaged_inf_state)
-
 	#jax.debug.print("disp in solve_one_step: {d}", d=disp)
 
 	### calculating strain energy density
@@ -959,7 +955,7 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#jax.debug.print("disp: {d}", d=disp)
 	#jax.debug.print("disp? {z}", z=jnp.any(disp == 0))
 
-	return (disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, loss_damage, forces_array, disp_array, velo_array, strain_energy, time + time_step)
+	return (disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, forces_array, disp_array, velo_array, strain_energy, time + time_step)
 
 
 ### put wrapper on solve
@@ -1017,8 +1013,6 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
 
     strain_energy = jnp.zeros(num_nodes)
     damage = jnp.zeros((num_steps, num_nodes))
-    loss_damage = jnp.zeros((num_nodes,))
-
     time = 0.0
 	
     
@@ -1030,7 +1024,7 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
         return new_vals
 
 	#Solve
-    vals = (disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, loss_damage, forces_array, disp_array, velo_array, strain_energy, time)
+    vals = (disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, forces_array, disp_array, velo_array, strain_energy, time)
     
     #jax.debug.print("Forces array before solve_one_step loop: {f}", f=vals[10].shape)
     vals_returned = jax.lax.fori_loop(0, num_steps, loop_body, vals)
@@ -1057,7 +1051,7 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
 
     #jax.debug.print("disp vals returened: {d}", d=vals_returned[0])
     #jax.debug.print("vals returned [1] {v}", v=vals_returned[1])
-    forces_saved = vals_returned[14][mask_all]
+    forces_saved = vals_returned[13][mask_all]
     #jax.debug.print("forces_saved after sim: {f}", f=forces_saved)
     #jax.debug.print("forces_saved after sim: {f}", f=forces_saved.shape)
 
@@ -1066,15 +1060,14 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     #jax.debug.print("damage_saved after sim: {d}", d=damage_saved.shape)
     
     
-    disp_saved = vals_returned[15][mask_all]
+    disp_saved = vals_returned[14][mask_all]
 
-    vel_saved =  vals_returned[16][mask_all]
+    vel_saved =  vals_returned[15][mask_all]
     
     #loss_damage = compute_damage(vol_state, inf_state, undamaged_inf_state)
-    loss_damage = compute_damage(vals_returned[6], vals_returned[8], vals_returned[11])
 
     return PDState(disp_x=vals_returned[0], disp_y=vals_returned[1], vel_x=vals_returned[2], vel_y=vals_returned[3], acc_x=vals_returned[4], acc_y=vals_returned[5], vol_state=vals_returned[6], rev_vol_state=vals_returned[7], influence_state=vals_returned[8],
-                   undamaged_influence_state=vals_returned[11], damage=damage_saved, loss_damage=loss_damage, forces_array=forces_saved, disp_array=disp_saved, velo_array=vel_saved, strain_energy=vals_returned[17], time=vals_returned[18])
+                   undamaged_influence_state=vals_returned[11], damage=damage_saved,forces_array=forces_saved, disp_array=disp_saved, velo_array=vel_saved, strain_energy=vals_returned[16], time=vals_returned[17])
 
 ### put wrapper on solve
 #@partial(jax.jit, static_argnums=(3,4))
@@ -1157,12 +1150,11 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
     checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
     
+    strain_energy = output_vals.strain_energy
+    strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
+    jax.debug.print("strain_energy_norm in loss: {s}", s=strain_energy_norm)
 
-    # Compute FINAL damage (not saved damage)
-    #final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
-    #final_damage = output_vals[10]
-    final_damage = output_vals[11][-1]
-    jax.debug.print("final damage in loss: {d}", d=final_damage)
+    normalization_factor = 1E4
     
     # --- Add Connectivity Penalty ---
     # Define neighbors: Assuming a 2D grid, compute pairwise differences for adjacent nodes.
@@ -1180,12 +1172,13 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     
     # Sum all differences as the perimeter penalty
     perimeter_penalty = jnp.sum(diff_x) + jnp.sum(diff_y)
-    jax.debug.print("perimeter penalty in loss: {p}", p=perimeter_penalty)
     
+    loss_value = 0.9 * (strain_energy_norm / normalization_factor) + 0.1 * perimeter_penalty
     
-    #loss_value = 0.9 * jnp.linalg.norm(final_damage, ord=1) + 0.1 * perimeter_penalty
-    loss_value = 0.9 * final_damage.sum() + 0.1 * perimeter_penalty
-    jax.debug.print("loss value in loss function: {l}", l=loss_value)
+    # Compute FINAL damage (not saved damage)
+    #final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
+    #final_damage = output_vals[10]
+
     
     return loss_value
 
@@ -1319,7 +1312,7 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
-    
+
 
 ##################################################
 # # Now using Optax to maximize
