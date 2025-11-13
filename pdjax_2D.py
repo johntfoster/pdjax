@@ -80,6 +80,7 @@ class PDState(NamedTuple):
 	rev_vol_state: jnp.ndarray
 	influence_state: jnp.ndarray
 	undamaged_influence_state: jnp.ndarray
+	loss_damage: jnp.ndarray
 	damage: jnp.ndarray
 	forces_array: jnp.ndarray
 	disp_array: jnp.ndarray
@@ -310,6 +311,7 @@ def init_problem(bar_length: float = 20.0,
 		velo_array=jnp.zeros((num_nodes, 2)),
 		strain_energy=0.0,
 		damage=jnp.zeros(num_nodes),
+		loss_damage=jnp.zeros(num_nodes),
 		time=0.0
 	)
 
@@ -861,7 +863,7 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 @partial(jax.jit, static_argnums=(2,))
 def solve_one_step(params, vals, allow_damage:bool):
 
-	(disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, forces_array, disp_array, velo_array, strain_energy, time) = vals
+	(disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, loss_damage, forces_array, disp_array, velo_array, strain_energy, time) = vals
 	prescribed_velocity = params.prescribed_velocity
 	bar_length = params.bar_length
 	left_bc_region = params.left_bc_region
@@ -932,6 +934,8 @@ def solve_one_step(params, vals, allow_damage:bool):
 
 	velo_array = save_velo_if_needed(velo_array, vel_x, step_number)
 
+	loss_damage = compute_damage(vol_state, inf_state, undamaged_inf_state)
+
 	#jax.debug.print("disp in solve_one_step: {d}", d=disp)
 
 	### calculating strain energy density
@@ -955,7 +959,7 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#jax.debug.print("disp: {d}", d=disp)
 	#jax.debug.print("disp? {z}", z=jnp.any(disp == 0))
 
-	return (disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, forces_array, disp_array, velo_array, strain_energy, time + time_step)
+	return (disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, loss_damage, forces_array, disp_array, velo_array, strain_energy, time + time_step)
 
 
 ### put wrapper on solve
@@ -1013,6 +1017,8 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
 
     strain_energy = jnp.zeros(num_nodes)
     damage = jnp.zeros((num_steps, num_nodes))
+    loss_damage = jnp.zeros((num_nodes,))
+
     time = 0.0
 	
     
@@ -1024,7 +1030,7 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
         return new_vals
 
 	#Solve
-    vals = (disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, forces_array, disp_array, velo_array, strain_energy, time)
+    vals = (disp_x, disp_y, vel_x, vel_y, acc_x, acc_y, vol_state, rev_vol_state, inf_state, density_field, thickness, undamaged_inf_state, damage, loss_damage, forces_array, disp_array, velo_array, strain_energy, time)
     
     #jax.debug.print("Forces array before solve_one_step loop: {f}", f=vals[10].shape)
     vals_returned = jax.lax.fori_loop(0, num_steps, loop_body, vals)
@@ -1051,7 +1057,7 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
 
     #jax.debug.print("disp vals returened: {d}", d=vals_returned[0])
     #jax.debug.print("vals returned [1] {v}", v=vals_returned[1])
-    forces_saved = vals_returned[13][mask_all]
+    forces_saved = vals_returned[14][mask_all]
     #jax.debug.print("forces_saved after sim: {f}", f=forces_saved)
     #jax.debug.print("forces_saved after sim: {f}", f=forces_saved.shape)
 
@@ -1060,14 +1066,15 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     #jax.debug.print("damage_saved after sim: {d}", d=damage_saved.shape)
     
     
-    disp_saved = vals_returned[14][mask_all]
+    disp_saved = vals_returned[15][mask_all]
 
-    vel_saved =  vals_returned[15][mask_all]
+    vel_saved =  vals_returned[16][mask_all]
     
     #loss_damage = compute_damage(vol_state, inf_state, undamaged_inf_state)
+    loss_damage = compute_damage(vals_returned[6], vals_returned[8], vals_returned[11])
 
     return PDState(disp_x=vals_returned[0], disp_y=vals_returned[1], vel_x=vals_returned[2], vel_y=vals_returned[3], acc_x=vals_returned[4], acc_y=vals_returned[5], vol_state=vals_returned[6], rev_vol_state=vals_returned[7], influence_state=vals_returned[8],
-                   undamaged_influence_state=vals_returned[11], damage=damage_saved,forces_array=forces_saved, disp_array=disp_saved, velo_array=vel_saved, strain_energy=vals_returned[16], time=vals_returned[17])
+                   undamaged_influence_state=vals_returned[11], damage=damage_saved, loss_damage=loss_damage, forces_array=forces_saved, disp_array=disp_saved, velo_array=vel_saved, strain_energy=vals_returned[17], time=vals_returned[18])
 
 ### put wrapper on solve
 #@partial(jax.jit, static_argnums=(3,4))
@@ -1150,34 +1157,37 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
     checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
     
-    strain_energy = output_vals.strain_energy
-    strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
-    jax.debug.print("strain_energy_norm in loss: {s}", s=strain_energy_norm)
 
-    normalization_factor = 1E4
+    # Compute FINAL damage (not saved damage)
+    #final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
+    #final_damage = output_vals[10]
+    final_damage = output_vals[11][-1]
+    #loss_value = jnp.linalg.norm(final_damage, ord=1)
+    #loss_value = jnp.linalg.norm(final_damage, ord=2)
     
     # --- Add Connectivity Penalty ---
     # Define neighbors: Assuming a 2D grid, compute pairwise differences for adjacent nodes.
     # (Adjust based on your grid: here, we assume a simple 2D mesh with neighbors in x/y directions.)
-    num_nodes = params.num_nodes
-    nx = params.number_of_elements  # e.g., 40
-    ny = params.number_of_elements // 4  # e.g., 10
+    #num_nodes = params.num_nodes
+    #nx = params.number_of_elements  # e.g., 40
+    #ny = params.number_of_elements // 4  # e.g., 10
     # Reshape density_field to grid for neighbor access (ny, nx)
-    density_grid = density_field.reshape((ny, nx))
+    #density_grid = density_field.reshape((ny, nx))
     
     # Compute differences with right neighbor (x-direction)
-    diff_x = jnp.abs(density_grid[:, 1:] - density_grid[:, :-1])  # Shape: (ny, nx-1)
+    #diff_x = jnp.abs(density_grid[:, 1:] - density_grid[:, :-1])  # Shape: (ny, nx-1)
     # Compute differences with bottom neighbor (y-direction)
-    diff_y = jnp.abs(density_grid[1:, :] - density_grid[:-1, :])  # Shape: (ny-1, nx)
+    #diff_y = jnp.abs(density_grid[1:, :] - density_grid[:-1, :])  # Shape: (ny-1, nx)
     
     # Sum all differences as the perimeter penalty
-    perimeter_penalty = jnp.sum(diff_x) + jnp.sum(diff_y)
+    #perimeter_penalty = (jnp.sum(diff_x) + jnp.sum(diff_y)) * 0.1 # for scaling
+    jax.debug.print("L1 norm final_damage in loss: {f}", f=jnp.linalg.norm(final_damage, ord=1) )
+    jax.debug.print("density_field.sum in loss: {d}", d=density_field.sum())
+    jax.debug.print("weighted L1 norm value in loss: {w}", w=0.9 * jnp.linalg.norm(final_damage, ord=1))
+    jax.debug.print("weighted density sum value in loss: {w}", w=0.1 * (density_field.sum() / 400.0))	
     
-    loss_value = 0.9 * (strain_energy_norm / normalization_factor) + 0.1 * perimeter_penalty
-    
-    # Compute FINAL damage (not saved damage)
-    #final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
-    #final_damage = output_vals[10]
+    loss_value = 0.95 * jnp.linalg.norm(final_damage, ord=1) + 0.05 * (density_field.sum()/400.0)  # Added initial density for scaling
+    #loss_value = 0.9 * final_damage.sum() + 0.1 * perimeter_penalty
 
     
     return loss_value
@@ -1205,7 +1215,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 3.0E10
+    prescribed_force = 2.0E9
 
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1248,7 +1258,7 @@ if __name__ == "__main__":
     thickness0 = thickness 
 
     
-    density_field = 1.0
+    density_field = 0.05
 
     
 
@@ -1266,7 +1276,7 @@ if __name__ == "__main__":
 	
     #max_time = 1.0E-03
     #max_time = 1.0
-    max_time = 1.0E-02
+    max_time = 5.0E-02
     
     max_time = float(max_time)
     
@@ -1312,188 +1322,5 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
+    
 
-
-##################################################
-# # Now using Optax to maximize
-# scalar param
-#param = jnp.array([1.0])
-density_field = 1.0
-thickness = jnp.full((params.num_nodes,), thickness0)
-param = jnp.full((params.num_nodes,), density_field)
-init_density = param.copy()
-
-#print("intitial param:", param)
-
-# optimizing only half of bar, such that thickness is symmetric
-num_nodes = params.num_nodes
-mid_index = num_nodes // 2  # midpoint of bar
-
-no_damage_region_left = params.no_damage_region_left
-no_damage_region_right = params.no_damage_region_right
-
-# Get unique x-values (already sorted)
-unique_x = jnp.unique(params.pd_nodes[:, 0])
-
-# Define excluded x-values (leftmost and rightmost)
-leftmost_x = unique_x[:5]   # First 5 x-values (left no-damage)
-rightmost_x = unique_x[-5:] # Last 5 x-values (right no-damage)
-excluded_x = jnp.concatenate([leftmost_x, rightmost_x])
-
-# Define middle_region as nodes NOT in excluded x-values
-middle_mask = ~jnp.isin(params.pd_nodes[:, 0], excluded_x)
-middle_region = jnp.where(middle_mask)[0]
-
-#print("middle_region: ", middle_region)
-#print("middle_region size: ", middle_region.size)  # Should be ~300 for your gri
-
-# Sort middle_region by x-position for symmetry
-middle_region = middle_region[jnp.argsort(params.pd_nodes[middle_region, 0])]
-
-# Define optimizable_indices as the left half of middle_region
-mid_middle = len(middle_region) // 2
-optimizable_indices = middle_region[:mid_middle]
-
-# Initialize param with the correct size
-param = jnp.ones((mid_middle,))
-
-loss_to_plot = []
-damage_to_plot = []
-strain_energy_to_plot = []
-
-learning_rate = 1.0
-num_steps = 50
-density_min = 0.0
-density_max = 1.0
-
-# Define gradient bounds
-lower = 1E-2
-upper = 20
-
-max_time = 5.0E-03
-
-# Optax optimizer
-optimizer = optax.adam(learning_rate)
-opt_state = optimizer.init(param)
-
-# Optimization loop
-damage_threshold = 0.5
-
-# Loss function (already defined as 'loss')
-loss_and_grad = jax.value_and_grad(loss, argnums=3)
-
-# Clamp function
-def clamp_params(grads):
-	lower = 1E-05
-	upper = 1.0E10
-	#jax.debug.print("entering clamp_params: {t}", t=grads)
-	grads = jax.tree_util.tree_map(lambda x: jnp.clip(jnp.abs(x), lower, upper), grads)
-	#jax.debug.print("grad after clamping: {t}", t=grads)
-	return grads
-def make_symmetric_density(left_params):
-    """Return full symmetric density array of shape (num_nodes,)."""
-    left_fixed_density = 1.0
-    right_fixed_density = 1.0
-
-    # Mirror optimized section (no reversal for symmetry)
-    mirrored = left_params  # Exact copy, not reversed
-    middle_full = jnp.concatenate([left_params, mirrored])
-
-    # Construct full bar density field
-    full_density_field = jnp.ones((num_nodes,))  # shape (num_nodes,)
-
-    # Insert middle region
-    full_density_field = full_density_field.at[middle_region].set(middle_full)
-
-    # Fix the outer ends
-    full_density_field = full_density_field.at[no_damage_region_left].set(left_fixed_density)
-    full_density_field = full_density_field.at[no_damage_region_right].set(right_fixed_density)
-
-    return full_density_field
-
-# Optimization loop
-for step in range(num_steps):
-	def true_fn(thickness):
-		jax.debug.print("thickness is all finite.")
-		return thickness
-
-	def false_fn(thickness):
-		jax.debug.print("Non-finite thickness detected: {t}", t=thickness)
-		return thickness
-
-	full_density_field = make_symmetric_density(param)
-	assert jnp.all(jnp.isfinite(param)), "Initial density contains NaNs!"
-
-	# enforce fixed region if needed
-	full_density_field = full_density_field.at[no_damage_region_left].set(1.0)
-	full_density_field = full_density_field.at[no_damage_region_right].set(1.0)
-
-	# Compute loss and gradients (grads wrt half param)
-	loss_val, grads_full = loss_and_grad(
-        params, state, thickness, full_density_field, 
-        forces_array, allow_damage, max_time)
-
-	# Extract grads only for half region
-	grads = grads_full[optimizable_indices]
-
-	updates, opt_state = optimizer.update(grads, opt_state, param)
-	param = optax.apply_updates(param, updates)
- 
-	# Enforcing density bounds of 0-1
-	param = jnp.clip(param, 0.0, 1.0)
- 
-    # Now compute strain_energy and damage separately for plotting
-	output_vals = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
-
-	loss_to_plot.append(loss_val)
-	strain_energy_to_plot.append(output_vals.strain_energy)
- 
-	# Compute final damage for plotting
-	final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
-	damage_to_plot.append(final_damage)
- 
-	#print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
-	print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
-	#print("total damage in optimization loop: ", output_vals.damage.sum())
-	#print("damage in optimization loop: ", damage[-1])
-
-#### to visualize final density field after optimization ####
-# Assuming params has nx and ny defined (nx = number_of_elements, ny = number_of_elements // 4)
-nx = params.number_of_elements
-ny = params.number_of_elements // 4
-
-# Reshape density fields to grid shape (ny, nx)
-init_density_grid = init_density.reshape((ny, nx))
-full_density_field_grid = full_density_field.reshape((ny, nx))
-
-# Create mirrored versions for plotting (mirror left half to right half)
-left_half_init = init_density_grid[:, :nx//2]
-mirrored_init_grid = jnp.concatenate([left_half_init, jnp.flip(left_half_init, axis=1)], axis=1)
-
-left_half_full = full_density_field_grid[:, :nx//2]
-mirrored_full_grid = jnp.concatenate([left_half_full, jnp.flip(left_half_full, axis=1)], axis=1)
-
-# Define the extent for the plot (full grid)
-x = jnp.linspace(-params.bar_length/2, params.bar_length/2, nx)
-y = jnp.linspace(-params.bar_length/8, params.bar_length/8, ny)
-extent = [x[0], x[-1], y[0], y[-1]]
-
-# Create subplots for initial and optimized density
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-# Plot initial density (mirrored grid)
-im1 = axes[0].imshow(mirrored_init_grid, cmap='RdPu', extent=extent, origin='lower', vmin=0, vmax=1)
-axes[0].set_title("Initial Density (Mirrored)")
-axes[0].set_xlabel("X Position")
-axes[0].set_ylabel("Y Position")
-plt.colorbar(im1, ax=axes[0], label='Density')
-
-# Plot optimized density (mirrored grid)
-im2 = axes[1].imshow(mirrored_full_grid, cmap='RdPu', extent=extent, origin='lower', vmin=0, vmax=1)
-axes[1].set_title("Optimized Density (Mirrored)")
-axes[1].set_xlabel("X Position")
-axes[1].set_ylabel("Y Position")
-plt.colorbar(im2, ax=axes[1], label='Density')
-
-plt.tight_layout()
-plt.show()
