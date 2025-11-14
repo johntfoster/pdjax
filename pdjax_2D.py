@@ -1162,6 +1162,8 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     #final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
     #final_damage = output_vals[10]
     final_damage = output_vals[11][-1]
+    #loss_value = jnp.linalg.norm(final_damage, ord=1) + (np.linalg.norm(final_damage, ord=1) / (1 + density_field.sum()))  # Reduces density's direct impact
+    loss_value = jnp.linalg.norm(final_damage, ord=1)  * ( 1 + 1 /density_field.sum()) 
     #loss_value = jnp.linalg.norm(final_damage, ord=1)
     #loss_value = jnp.linalg.norm(final_damage, ord=2)
     
@@ -1181,15 +1183,22 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     
     # Sum all differences as the perimeter penalty
     #perimeter_penalty = (jnp.sum(diff_x) + jnp.sum(diff_y)) * 0.1 # for scaling
-    jax.debug.print("L1 norm final_damage in loss: {f}", f=jnp.linalg.norm(final_damage, ord=1) )
-    jax.debug.print("density_field.sum in loss: {d}", d=density_field.sum())
-    jax.debug.print("weighted L1 norm value in loss: {w}", w=0.9 * jnp.linalg.norm(final_damage, ord=1))
-    jax.debug.print("weighted density sum value in loss: {w}", w=0.1 * (density_field.sum() / 400.0))	
-    
-    loss_value = 0.95 * jnp.linalg.norm(final_damage, ord=1) + 0.05 * (density_field.sum()/400.0)  # Added initial density for scaling
-    #loss_value = 0.9 * final_damage.sum() + 0.1 * perimeter_penalty
 
+    #loss_value = 0.95 * jnp.linalg.norm(final_damage, ord=1) + 0.01 * (density_field.sum() / 400.0)
     
+    #damage_norm = jnp.linalg.norm(final_damage, ord=1)
+    #density_penalty = density_field.sum() / 400.0
+    #loss_value = 0.9 * damage_norm + 0.1 * (damage_norm / (1 + density_penalty))  # Reduces density's direct impact
+    #loss_value = 0.95 * damage_norm + 0.1 * (damage_norm / (0.01 * density_field.sum()))  # Reduces density's direct impact
+    #loss_value = damage_norm + (damage_norm / (0.01 * density_field.sum()))  # Reduces density's direct impact
+        
+    #loss_value = 0.95 * jnp.linalg.norm(final_damage, ord=1) + 0.05 * (density_field.sum()/400.0)  # Added initial density for scaling
+    #loss_value = 0.9 * final_damage.sum() + 0.1 * perimeter_penalty
+    #jax.debug.print("L1 norm final_damage in loss: {f}", f=damage_norm )
+    #jax.debug.print("density penalty in loss: {d}", d=damage_norm / (0.01 * density_field.sum()))
+    #jax.debug.print("weighted L1 norm value in loss: {w}", w= 0.95 * damage_norm)
+    #jax.debug.print("weighted density sum value in loss: {w}", w=0.1 * (damage_norm / (0.01 * density_field.sum())))
+
     return loss_value
 
 
@@ -1215,7 +1224,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 2.0E9
+    prescribed_force = 3.0E10
 
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1258,7 +1267,7 @@ if __name__ == "__main__":
     thickness0 = thickness 
 
     
-    density_field = 0.05
+    density_field = 1.0
 
     
 
@@ -1276,7 +1285,7 @@ if __name__ == "__main__":
 	
     #max_time = 1.0E-03
     #max_time = 1.0
-    max_time = 5.0E-02
+    max_time = 1.0E-02
     
     max_time = float(max_time)
     
@@ -1324,3 +1333,94 @@ if __name__ == "__main__":
     plt.show()
     
 
+	##################################################
+# # Now using Optax to maximize
+# scalar param
+#param = jnp.array([1.0])
+density_field = 1.0
+thickness = jnp.full((params.num_nodes,), thickness0)
+param = jnp.full((params.num_nodes,), density_field)
+init_density = param.copy()
+
+# Calculate the starting index for the middle three entries
+middle_start = params.num_nodes // 2 - 1
+
+# Set the middle three entries to 0.75
+param = param.at[middle_start:middle_start + 3].set(0.0)
+
+loss_to_plot = []
+damage_to_plot = []
+strain_energy_to_plot = []
+
+learning_rate = 1.0
+num_steps = 10
+density_min = 0.0
+density_max = 1.0
+
+# Define gradient bounds
+lower = 1E-2
+upper = 20
+
+#max_time = 5.0E-03
+max_time = 1.0E-02
+
+# Optax optimizer
+optimizer = optax.adam(learning_rate)
+opt_state = optimizer.init(param)
+
+# Optimization loop
+damage_threshold = 0.5
+
+# Loss function (already defined as 'loss')
+loss_and_grad = jax.value_and_grad(loss, argnums=3)
+
+# Clamp function
+def clamp_params(grads):
+	lower = 1E-05
+	upper = 1.0E10
+	#jax.debug.print("entering clamp_params: {t}", t=grads)
+	grads = jax.tree_util.tree_map(lambda x: jnp.clip(jnp.abs(x), lower, upper), grads)
+	#jax.debug.print("grad after clamping: {t}", t=grads)
+	return grads
+
+
+# Optimization loop
+for step in range(num_steps):
+	def true_fn(thickness):
+		jax.debug.print("thickness is all finite.")
+		return thickness
+
+	def false_fn(thickness):
+		jax.debug.print("Non-finite thickness detected: {t}", t=thickness)
+		return thickness
+
+	full_density_field = param
+	assert jnp.all(jnp.isfinite(param)), "Initial density contains NaNs!"
+
+    # Compute loss and gradients (grads wrt full param)
+	loss_val, grads_full = loss_and_grad(
+        params, state, thickness, param,  # Note: param is now the full density_field
+        forces_array, allow_damage, max_time)
+
+    # No need to extract subset; grads_full matches param shape
+	grads = grads_full
+
+	updates, opt_state = optimizer.update(grads, opt_state, param)
+	param = optax.apply_updates(param, updates)
+
+    # Enforcing density bounds of 0-1
+	param = jnp.clip(param, 0, 1.0)
+    # Now compute strain_energy and damage separately for plotting
+	output_vals = _solve(params, state, thickness, param, forces_array, allow_damage, max_time)
+
+	loss_to_plot.append(loss_val)
+	strain_energy_to_plot.append(output_vals.strain_energy)
+ 
+	# Compute final damage for plotting
+	final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
+	damage_to_plot.append(final_damage)
+ 
+	#print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
+	print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
+	#print("total damage in optimization loop: ", output_vals.damage.sum())
+	#print("damage in optimization loop: ", damage[-1])
