@@ -638,23 +638,30 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	# Bond strain energy calculation
 	#bond_strain_energy = 9.0 * K * safe_divide(exten_state**2 * ref_mag_state, shape_tens_geom[:, None])
 
-
+	#########################################################
+	## adjusting micromodulus calculation in 2D for nodes partially in horizon ##
+ 
 	### now in 2D calculate scalar force_state differently, no longer need 9.0 factor ###
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	E = 200E9
 	nu = 0.34
-	c_base = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 
-	# build per-bond density weight: density_i * density_j, broadcast to bonds
-	# density_field shape must be (num_nodes,)
-	#rho_i = density_field[:, None]            # (num_nodes, 1)
-	#rho_j = density_field[neigh]              # (num_nodes, max_neighbors)
-	#density_bond = rho_i * rho_j              # (num_nodes, max_neighbors)
+	if ref_mag_state < horizon - jnp.max(pos_x,pos_y)/2.0:
+		gamma = 1.0
+		evaluate_at = ref_mag_state
+		c_bond = 24 * E / (jnp.pi * horizon**3 * (1 - nu)) * (1 - evaluate_at / horizon)  # Plane stress (corrected from plane strain)
+  
+	elif ref_mag_state < horizon: 
+		gamma = (horizon + jnp.max(pos_x,pos_y)/2.0 - ref_mag_state) / (jnp.max(pos_x,pos_y))
+		evaluate_at = ref_mag_state - (1-gamma) * (jnp.max(pos_x,pos_y)/2.0)
+		c_bond = 24 * E / (jnp.pi * horizon**3 * (1 - nu)) * (1 - evaluate_at/horizon)
 
-	# incorporating density_field into bond micromodulus, multiplying c by density_bond
-	#c_bond = c_base * density_bond
-	c_bond = c_base
+	elif ref_mag_state >= horizon - jnp.max(pos_x,pos_y)/2.0:
+		gamma = (horizon + max(pos_x,pos_y)/2.0 - ref_mag_state) / (jnp.max(pos_x,pos_y))
+		evaluate_at = horizon - gamma * (jnp.max(pos_x,pos_y)/2.0)
+		c_bond = 24 * E / (jnp.pi * horizon**3 * (1 - nu)) * (1 - evaluate_at/horizon)
 
 	# compute scalar_force_state and bond_strain_energy including the bond-specific stiffness
 	scalar_force_state = c_bond * safe_divide(exten_state, ref_mag_state) * inf_state_updated
@@ -1304,7 +1311,7 @@ if __name__ == "__main__":
     #print("thickness: ", thickness0)
     #print("thickness shape: ", thickness0.shape)
     #print("num_elems: ", num_elems)
-    results = _solve(params, state, thickness0, filtered_density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     #jax.debug.print("allow_damage in main: {a}", a=allow_damage)
     
     
@@ -1332,6 +1339,8 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
+
+
     
 
 ##################################################
