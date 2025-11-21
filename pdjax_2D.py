@@ -392,17 +392,18 @@ def compute_partial_volumes(params, thickness:jax.Array, density_field:jax.Array
 	#vol_state = jnp.where(ref_mag_state < horiz + lens[neigh] / 2.0, vol_state_uncorrected, 0.0)
 	vol_state = vol_state_where(ref_mag_state, horiz, lens, neigh, vol_state_uncorrected)  
 
+	###### 1D partial volume calculations, no transferable in 2D ######
 	# Check to see if the neighboring node has a partial volume
-	is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
+	#is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
 	#jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(is_partial_volume)))
 
 	# Two different scenarios:
-	is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
-	is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
+	#is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
+	#is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
 
 	# Compute the partial volumes conditionally
-	vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[neigh], vol_state)
-	vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[neigh], vol_state)
+	#vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[neigh], vol_state)
+	#vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[neigh], vol_state)
  
 	# Apply density field scaling
 	rho_i = density_field[:, None]     # (num_nodes, 1)
@@ -423,8 +424,9 @@ def compute_partial_volumes(params, thickness:jax.Array, density_field:jax.Array
 
 	#jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
 
-	rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[:, None], rev_vol_state)
-	rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[:, None], rev_vol_state)
+	##### again, 1D partial volume calculations not transferable to 2D #####
+	#rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[:, None], rev_vol_state)
+	#rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[:, None], rev_vol_state)
 
 	# Apply density field scaling
 	rho_j = density_field[neigh]       # (num_nodes, max_neighbors)
@@ -646,22 +648,30 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	E = 200E9
 	nu = 0.34
-	c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 
-	if ref_mag_state < horizon - jnp.max(pos_x,pos_y)/2.0:
-		gamma = 1.0
-		evaluate_at = ref_mag_state
-		c_bond = 24 * E / (jnp.pi * horizon**3 * (1 - nu)) * (1 - evaluate_at / horizon)  # Plane stress (corrected from plane strain)
-  
-	elif ref_mag_state < horizon: 
-		gamma = (horizon + jnp.max(pos_x,pos_y)/2.0 - ref_mag_state) / (jnp.max(pos_x,pos_y))
-		evaluate_at = ref_mag_state - (1-gamma) * (jnp.max(pos_x,pos_y)/2.0)
-		c_bond = 24 * E / (jnp.pi * horizon**3 * (1 - nu)) * (1 - evaluate_at/horizon)
+	# Assuming pos_x and pos_y are arrays of shape (num_nodes,), and ref_mag_state is (num_nodes, max_neighbors)
+	# E, nu, horizon are scalars
 
-	elif ref_mag_state >= horizon - jnp.max(pos_x,pos_y)/2.0:
-		gamma = (horizon + max(pos_x,pos_y)/2.0 - ref_mag_state) / (jnp.max(pos_x,pos_y))
-		evaluate_at = horizon - gamma * (jnp.max(pos_x,pos_y)/2.0)
-		c_bond = 24 * E / (jnp.pi * horizon**3 * (1 - nu)) * (1 - evaluate_at/horizon)
+	# Compute element-wise max of pos_x and pos_y
+	max_pos = jnp.maximum(jnp.abs(pos_x), jnp.abs(pos_y))  # Shape: (num_nodes,)
+
+	# Compute threshold for conditions
+	thresh = horizon - max_pos / 2.0  # Shape: (num_nodes,)
+
+	# Define masks (broadcast thresh to match ref_mag_state shape)
+	mask1 = ref_mag_state < thresh[:, None]  # Shape: (num_nodes, max_neighbors)
+	mask2 = ref_mag_state < horizon  # Shape: (num_nodes, max_neighbors)
+
+	# Compute gamma
+	gamma = jnp.where(mask1, 1.0, (horizon + max_pos[:, None] / 2.0 - ref_mag_state) / max_pos[:, None])  # Shape: (num_nodes, max_neighbors)
+
+	# Compute evaluate_at
+	evaluate_at = jnp.where(mask1, ref_mag_state, jnp.where(mask2, ref_mag_state - (1 - gamma) * (max_pos[:, None] / 2.0),
+			horizon - gamma * (max_pos[:, None] / 2.0)))  # Shape: (num_nodes, max_neighbors)
+
+	# Compute c_bond
+	c_bond = 24 * E / (jnp.pi * horizon**3 * (1 - nu)) * (1 - evaluate_at / horizon)  # Shape: (num_nodes, max_neighbors)
 
 	# compute scalar_force_state and bond_strain_energy including the bond-specific stiffness
 	scalar_force_state = c_bond * safe_divide(exten_state, ref_mag_state) * inf_state_updated
@@ -1339,7 +1349,6 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
-
 
     
 
