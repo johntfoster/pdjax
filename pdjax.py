@@ -8,6 +8,7 @@ import numpy as np
 import scipy.spatial
 import scipy.optimize
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import matplotlib.animation as animation
 
 
@@ -1008,7 +1009,8 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	strain_energy = output_vals[11]
  
 	# Extract damage from output_vals
-	damage = output_vals[7][-1]
+	#damage = output_vals[7][-1]
+	damage = output_vals[7]
 
 	# Calc strain energy density
 	#total_volume = jnp.sum(vol_state)
@@ -1016,7 +1018,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	# calc L1 norm strain energy density
 	#strain_energy_L1_norm = jnp.linalg.norm(strain_energy, ord=1, axis=0)
-	strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
+	#strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
 
 	normalization_factor = 1E12
 	
@@ -1038,14 +1040,16 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	#Calling compute damage 
 	#jax.debug.print("inf state: {i}", i=output_vals[5])
 	#loss_value = damage.sum()
- 
 	#loss_value = damage.mean() * 1.0E3
-	loss_value = jnp.linalg.norm(damage, ord=1)
+
     # Weights for balancing mean and max (adjust w_mean and w_max based on your priorities)
 	#w_sum = 0.5 # Weight for mean damage (e.g., 70% focus on overall average)
 	#w_max = 0.5  # Weight for max damage (e.g., 30% focus on peaks)
 
-	#sum_damage = damage.sum()  #
+	#loss_value = damage.sum()  #
+	#loss_value = jnp.linalg.norm(damage, ord=1)
+	loss_value = jnp.linalg.norm(damage, ord=2)
+  	#loss_value = jnp.linalg.norm(damage, ord=1)
 	#max_damage = jnp.max(damage)    # Maximum damage value across all nodes and saved time steps
 
 	#loss_value = w_sum * sum_damage + (w_max * max_damage * 10.0)
@@ -1070,6 +1074,9 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	# Weighted combination, multi-objective
 	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor)
+
+	#jax.debug.print("damage vector: {d}", d=damage[-1])
+	#jax.debug.print("L2 loss: {l}", l=jnp.linalg.norm(damage[-1], ord=2))
 
 	return loss_value, (strain_energy, damage)
 
@@ -1182,11 +1189,14 @@ if __name__ == "__main__":
     ax.set_xlabel("Node Position")
     ax.set_ylabel("Displacement")
     ax.set_title("Displacement vs Node Position (Forward Problem)")
-    #ax.set_ylim(-2.5,2.5)
+    ax.set_ylim(-1.0, 1.0)
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness0)
     
+    ##################################################
+
+
     ##################################################
 # # Now using Optax to maximize
 # random array of thickness values for initial thickness 
@@ -1228,17 +1238,18 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 1.0
-num_steps = 20
+num_steps = 4
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
-# Define gradient bounds
+## Define gradient bounds
 lower = 1E-2
 upper = 20
 
 #max_time = 1.0E-02
 max_time = 5.0E-03
 #max_time = 1.0E-03
+#max_time = 1.0E-01
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
@@ -1315,7 +1326,14 @@ for step in range(num_steps):
 	strain_energy_to_plot.append(strain_energy)
 	damage_to_plot.append(damage)
 
-	jax.debug.print("Step {s}, loss={l}, thickness={t}",
-					s=step, l=loss_val, t=full_thickness)
+	jax.debug.print("Step {s}, loss={l}, thickness={t}, gradients={g}", 
+					s=step, l=loss_val, t=full_thickness, g=grads)
 	print("damage in optimization loop: ", damage[-1])
-    
+
+	damage_threshold = 0.5
+ 
+      # Early stopping condition: Check if ALL node damages are below the threshold
+	if jnp.all(damage < damage_threshold):
+		print(f"Early stopping at step {step}: All damages are below {damage_threshold}.")
+		jax.debug.print("Early stopping: All damages below threshold.")
+		break  # Exit the loop
