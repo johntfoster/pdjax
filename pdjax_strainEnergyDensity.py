@@ -968,7 +968,7 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 
 def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float):
 	# thickness_vector = thickness_vector[0] * jnp.ones(params.num_nodes)
- 
+
  	# Thickness can't change in no_damage regions
 	min_thickness_no_damage = 5.0
 	#thickness_vector = thickness_in_no_damage_region(thickness_vector, params.no_damage_region_left, params.no_damage_region_right, min_thickness_no_damage)
@@ -976,12 +976,12 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	output_vals = _solve(params, state, thickness=thickness_vector, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
 	checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
-	
+
 	jax.debug.print("inf_state after run: {i}", i=output_vals[5])
 
 	# Extract strain energy density from output_vals
 	strain_energy = output_vals[10]
- 
+
 	# Extract damage from output_vals
 	damage = output_vals[7]
 
@@ -991,48 +991,39 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	# calc L1 norm strain energy density
 	#strain_energy_L1_norm = jnp.linalg.norm(strain_energy, ord=1, axis=0)
-	#strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
-
-	# calc L2 norm strain energy density
-	#strain_energy_norm = jnp.linalg.norm(strain_energy, ord=2)
-	#strain_energy_norm = jnp.log(jnp.linalg.norm(strain_energy, ord=2) + 1e-12)
-	
-	# calc Linf norm strain energy density, only one that actually works to minimze max strain energy
 	strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
 
-	#normalization_factor = 1E12
-	normalization_factor = 1E20
-	
+	normalization_factor = 1E12
+
 	mean_thickness = thickness_vector.mean()
 	max_thickness = thickness_vector.max()
 	min_thickness = thickness_vector.min()
 
 	critical_thickness = 0.5
-	penalty_weight = 1e15
+	penalty_weight = 1e16
 	thickness_penalty = jnp.maximum(0.0, critical_thickness - min_thickness)
 
 	# loss value that implements thickness penalty
-	#loss_value = strain_energy_norm / normalization_factor 
+	# loss_value = strain_energy_norm / normalization_factor 
 	# loss_value = strain_energy_norm / normalization_factor + mean_thickness/max_thickness * 1E9 
-
 
 
 	#print("undamaged_inf_state: ", output_vals[6])
 
 	#Calling compute damage 
 	#jax.debug.print("inf state: {i}", i=output_vals[5])
+	#loss_value = damage.sum()
 	# loss_value = damage.sum()
 
 
 	#### Analyzing different loss functions ####
 	# No thickness dependence
+	# loss_value = strain_energy_norm / normalization_factor
 	loss_value = strain_energy_norm / normalization_factor
-
-
 
 	# With thickness dependence, penalize for total thickness
 	#loss_value = strain_energy_density / normalization_factor + thickness_vector.sum()
-	
+
 	# Ratio, encourage low strain energy per unit thickness 
 	#loss_value = (strain_energy_density / normalization_factor) / (jnp.sum(thickness_vector) + 1e-8)
 
@@ -1044,7 +1035,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	#loss_value = jnp.sum(strain_energy_density / (thickness_vector + 1e-8))
 
 	# Weighted combination, multi-objective
-	loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor)
+	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor)
 
 	return loss_value, (strain_energy, damage)
 
@@ -1163,6 +1154,79 @@ if __name__ == "__main__":
     print("thickness: ",thickness)
     
 
+
+'''
+########## Plotting results ##########
+ # Assuming results.damage[-1] is the damage array at the final time step
+# (shape should match params.pd_nodes, e.g., (num_nodes,))
+#damage_final = damage[-1]
+damage_final = results.damage[-1]
+
+fig, ax = plt.subplots()
+
+# Change from ax.plot to ax.scatter for color variation
+#sc = ax.scatter(params.pd_nodes, results.disp_array[-1], c=damage_final, cmap="viridis", s=40, edgecolor='k', vmin=0, vmax=1)
+sc = ax.scatter(params.pd_nodes, disp, c=damage_final, cmap="viridis", s=40, edgecolor='k', vmin=0, vmax=1)
+
+ax.set_xlabel("Node Position")
+ax.set_ylabel("Displacement")
+ax.set_title("Displacement vs Node Position (Forward Problem)")
+#ax.set_ylim(-0.5,0.5) 
+ax.set_ylim(-1.0, 1.0) 
+
+# Add colorbar
+cbar = plt.colorbar(sc, ax=ax)
+cbar.set_label("Damage")
+
+plt.tight_layout()
+plt.show()
+
+print("thickness: ", thickness)
+
+######### Animation of results ################################
+forces_to_apply = results[8]
+damages = results[7]
+displacements = results[9]
+
+fig, ax = plt.subplots()
+# Create an empty scatter instead of a line
+sc = ax.scatter([], [], c=[], cmap="viridis", vmin=0, vmax=1, s=40)
+
+ax.set_xlabel("Node Position")
+ax.set_ylabel("Displacement")
+ax.set_title("Displacement vs Node Position (Animated)")
+ax.set_xlim(-5, 5)
+ax.set_ylim(-3.0E3 - 0.1 * 3.0E3, 3.0E3 + 0.1 * 3.0E3)
+
+# add colorbar
+cbar = plt.colorbar(sc, ax=ax)
+cbar.set_label("Damage")
+
+def init():
+    sc.set_offsets(np.empty((0, 2)))   # empty coords with correct shape
+    sc.set_array(np.array([]))         # empty color array
+    return sc,
+
+def update(frame):
+    disp = displacements[frame]      # shape (num_nodes,)
+    dmg  = damages[frame]            # same shape as disp
+    nodes = params.pd_nodes          # shape (num_nodes,)
+
+    # scatter wants Nx2 array for coordinates
+    coords = np.column_stack((nodes, disp))
+    sc.set_offsets(coords)
+    sc.set_array(dmg)  # colors from damage
+
+    ax.set_title(f"Displacement, Force={forces_to_apply[frame]/1e13:.3f}e13")
+    return sc,
+
+ani = animation.FuncAnimation(fig, update, frames=len(displacements), init_func=init, blit=False, repeat=False)
+
+plt.show()
+ani.save("displacements.gif", writer="imagemagick", fps=2)
+'''
+
+
 ##################################################
 # # Now using Optax to maximize
 # random array of thickness values for initial thickness 
@@ -1203,8 +1267,9 @@ damage = []
 # when use strain energy density as loss, use smaller
 #learning_rate = 1E-1
 
-learning_rate = 10.0
-num_steps = 20
+learning_rate = 1.0
+#learning_rate = 0.1
+num_steps = 5000
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
@@ -1212,9 +1277,9 @@ thickness_max = 1.0E2
 lower = 1E-2
 upper = 20
 
-#max_time = 1.0E-02
-max_time = 5.0E-03
-#max_time = 1.0E-03
+#max_time = 5.0E-02
+#max_time = 5.0E-03
+max_time = 1.0E-03
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
@@ -1294,76 +1359,11 @@ for step in range(num_steps):
 	jax.debug.print("Step {s}, loss={l}, thickness={t}",
 					s=step, l=loss_val, t=full_thickness)
 	print("damage in optimization loop: ", damage[-1])
-  
-
-
-
-########## Plotting results ##########
- # Assuming results.damage[-1] is the damage array at the final time step
-# (shape should match params.pd_nodes, e.g., (num_nodes,))
-#damage_final = damage[-1]
-damage_final = results.damage[-1]
-
-fig, ax = plt.subplots()
-
-# Change from ax.plot to ax.scatter for color variation
-#sc = ax.scatter(params.pd_nodes, results.disp_array[-1], c=damage_final, cmap="viridis", s=40, edgecolor='k', vmin=0, vmax=1)
-sc = ax.scatter(params.pd_nodes, disp, c=damage_final, cmap="viridis", s=40, edgecolor='k', vmin=0, vmax=1)
-
-ax.set_xlabel("Node Position")
-ax.set_ylabel("Displacement")
-ax.set_title("Displacement vs Node Position (Forward Problem)")
-#ax.set_ylim(-0.5,0.5) 
-ax.set_ylim(-1.0, 1.0) 
-
-# Add colorbar
-cbar = plt.colorbar(sc, ax=ax)
-cbar.set_label("Damage")
-
-plt.tight_layout()
-plt.show()
-
-print("thickness: ", thickness)
-'''
-######### Animation of results ################################
-forces_to_apply = results[8]
-damages = results[7]
-displacements = results[9]
-
-fig, ax = plt.subplots()
-# Create an empty scatter instead of a line
-sc = ax.scatter([], [], c=[], cmap="viridis", vmin=0, vmax=1, s=40)
-
-ax.set_xlabel("Node Position")
-ax.set_ylabel("Displacement")
-ax.set_title("Displacement vs Node Position (Animated)")
-ax.set_xlim(-5, 5)
-ax.set_ylim(-3.0E3 - 0.1 * 3.0E3, 3.0E3 + 0.1 * 3.0E3)
-
-# add colorbar
-cbar = plt.colorbar(sc, ax=ax)
-cbar.set_label("Damage")
-
-def init():
-    sc.set_offsets(np.empty((0, 2)))   # empty coords with correct shape
-    sc.set_array(np.array([]))         # empty color array
-    return sc,
-
-def update(frame):
-    disp = displacements[frame]      # shape (num_nodes,)
-    dmg  = damages[frame]            # same shape as disp
-    nodes = params.pd_nodes          # shape (num_nodes,)
-
-    # scatter wants Nx2 array for coordinates
-    coords = np.column_stack((nodes, disp))
-    sc.set_offsets(coords)
-    sc.set_array(dmg)  # colors from damage
-
-    ax.set_title(f"Displacement, Force={forces_to_apply[frame]/1e13:.3f}e13")
-    return sc,
-
-ani = animation.FuncAnimation(fig, update, frames=len(displacements), init_func=init, blit=False, repeat=False)
-
-plt.show()
-ani.save("displacements.gif", writer="imagemagick", fps=2)
-'''
+ 
+	damage_threshold = 0.5
+ 
+      # Early stopping condition: Check if ALL node damages are below the threshold
+	if jnp.all(damage < damage_threshold):
+		print(f"Early stopping at step {step}: All damages are below {damage_threshold}.")
+		jax.debug.print("Early stopping: All damages below threshold.")
+		break  # Exit the loop
