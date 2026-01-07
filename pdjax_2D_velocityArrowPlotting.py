@@ -1,5 +1,3 @@
-## horizon=0.20
-## settings to get plots of velocity propagation
 from functools import partial
 import time
 
@@ -727,20 +725,34 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     If step_number is one we want to save, write disp_value at that index,
     otherwise return disp_array unchanged.
     """
+    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
     mask = jnp.logical_or(
-        # Phase 1: 0-6000, every 2000, set to 1000 for creating velocity propagation plots
-        jnp.logical_and(step_number <= 6000, step_number % 1000 == 0),
-
-        # Phase 2: 6000-15000, every 4000, set to 3000 for propagation plots
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                step_number % 3000 == 0
-            )
-        )
-    )
-    
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)
+    '''
+    mask = jnp.logical_or(
+		# Phase 1: 0-300, every 50, set to 300 for creating velocity propagation plots
+		jnp.logical_and(step_number <= 500, step_number % 50 == 0),
+		jnp.logical_or(
+			jnp.logical_and(
+				step_number >= 50,
+				jnp.logical_and(
+					step_number <= 300,
+					step_number % 1000 == 0
+				)
+			),
+			# Phase 2: 6000-15000, every 4000, set to 1000 for propagation plots
+			jnp.logical_and(
+				step_number >= 6000,
+				jnp.logical_and(
+					step_number <= 15000,
+					step_number % 3000 == 0
+				)
+			)
+		)
+	)
+    '''
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(disp_value)
@@ -750,19 +762,12 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
 
 @jax.jit
 def save_if_needed(forces_array, force_value, step_number):
+    #mask = jnp.logical_and(step_number <= 1000, step_number % 50 == 0)
+    
     mask = jnp.logical_or(
-        # Phase 1: 0-6000, every 2000, set to 1000 for creating velocity propagation plots
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 1000) == 0),
-        # Phase 2: 6000-15000, every 4000, set to 3000 for propagation plots
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                lax.rem(step_number, 3000) == 0
-            )
-        )
-    )
-
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(force_value)
@@ -773,18 +778,9 @@ def save_if_needed(forces_array, force_value, step_number):
 @jax.jit
 def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, force_value):
     mask = jnp.logical_or(
-        # Phase 1: 0-6000, every 2000, set to 1000 for creating velocity propagation plots
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 1000) == 0),
-        
-        # Phase 2: 6000-15000, every 4000, set to 3000 for propagation plots
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                lax.rem(step_number, 3000) == 0
-            )
-        )
-    )
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)
     # Use lax.cond to choose branch without Python-side branching
     
     def write(arr):
@@ -801,19 +797,9 @@ def save_velo_if_needed(velo_array, velo_value, step_number):
     otherwise return velo_array unchanged.
     """
     mask = jnp.logical_or(
-        # Phase 1: 0-6000, every 2000 steps, set to 1000 for creating velocity propagation plots
-        jnp.logical_and(step_number <= 6000, step_number % 1000 == 0),
-
-        # Phase 2: 6000-15000, every 4000, set to 3000 for propagation plots
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                step_number % 3000 == 0
-            )
-        )
-    )
-
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(velo_value)
@@ -1065,20 +1051,36 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     # Using mask to save forces at desired steps for plotting animation
     step_inds = jnp.arange(num_steps)
     
-    
+    #mask_all = jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0)
     mask_all = jnp.logical_or(
-        # Phase 1: 0-6000, every 2000 steps, set to 1000 for creating velocity propagation plots
-        jnp.logical_and(step_inds <= 6000, step_inds % 1000 == 0),
-
-       # Phase 2: 6000-15000, every 4000, set to 3000 for propagation plots
-        jnp.logical_and(
-            step_inds >= 6000,
-            jnp.logical_and(
-                step_inds <= 15000,
-                step_inds % 3000 == 0
-            )
-        )
-    )
+    jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0),
+    jnp.logical_and(jnp.logical_and(step_inds >= 1000, step_inds <= 1600), step_inds % 200 == 0)
+)
+    
+    '''
+    mask_all = jnp.logical_or(
+		# Phase 1: 0-300, every 50, set to 100 for creating velocity propagation plots
+		jnp.logical_and(step_inds <= 300, step_inds % 50 == 0),
+		jnp.logical_or(
+			# Phase 1.5: 300-6000, every 100, set to 1000 for propagation plots
+			jnp.logical_and(
+				step_inds >= 300,
+				jnp.logical_and(
+					step_inds <= 6000,
+					step_inds % 1000 == 0
+				)
+			),
+			# Phase 2: 6000-15000, every 4000, set to 1000 for propagation plots
+			jnp.logical_and(
+				step_inds >= 6000,
+				jnp.logical_and(
+					step_inds <= 15000,
+					step_inds % 3000 == 0
+				)
+			)
+		)
+	)
+ '''
 
     #jax.debug.print("disp vals returened: {d}", d=vals_returned[0])
     #jax.debug.print("vals returned [1] {v}", v=vals_returned[1])
@@ -1316,7 +1318,7 @@ if __name__ == "__main__":
     #print("thickness: ", thickness0)
     #print("thickness shape: ", thickness0.shape)
     #print("num_elems: ", num_elems)
-    results = _solve(params, state, thickness0, filtered_density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     #jax.debug.print("allow_damage in main: {a}", a=allow_damage)
     
     
@@ -1346,368 +1348,9 @@ if __name__ == "__main__":
     plt.show()
     
 
+##################################################################################################
+############### plotting velocity arrows in optimized structure ##############################
 
-###################### optmization loop #########################
-##################################################
-# # Now using Optax to maximize
-# scalar param
-#param = jnp.array([1.0])
-density_field = 0.25
-thickness = jnp.full((params.num_nodes,), thickness0)
-param = jnp.full((params.num_nodes,), density_field)
-init_density = param.copy()
-
-# setting density values in no_damage_regions
-left_fixed_density = 0.50
-right_fixed_density = 0.50
-
-# optimizing only half of bar, such that thickness is symmetric
-num_nodes = params.num_nodes
-mid_index = num_nodes // 2  # midpoint of bar
-
-no_damage_region_left = params.no_damage_region_left
-no_damage_region_right = params.no_damage_region_right
-
-# Get unique x-values (already sorted)
-unique_x = jnp.unique(params.pd_nodes[:, 0])
-
-# Define excluded x-values (leftmost and rightmost)
-leftmost_x = unique_x[:5]   # First 5 x-values (left no-damage)
-rightmost_x = unique_x[-5:] # Last 5 x-values (right no-damage)
-excluded_x = jnp.concatenate([leftmost_x, rightmost_x])
-
-# Define middle_region as nodes NOT in excluded x-values
-middle_mask = ~jnp.isin(params.pd_nodes[:, 0], excluded_x)
-middle_region = jnp.where(middle_mask)[0]
-
-# Further restrict to top half (y > 0) of middle_region
-top_half_mask = params.pd_nodes[:, 1] > 0
-top_half_middle = jnp.where(middle_mask & top_half_mask)[0]
-
-# Sort top_half_middle by x-position for consistency
-top_half_middle = top_half_middle[jnp.argsort(params.pd_nodes[top_half_middle, 0])]
-
-# Define optimizable_indices as the top half of middle_region (now restricted to y > 0)
-optimizable_indices = top_half_middle
-
-# Initialize param with the correct size (length of top_half_middle)
-param = jnp.ones((len(top_half_middle),)) * density_field
-
-loss_to_plot = []
-damage_to_plot = []
-strain_energy_to_plot = []
-
-#learning_rate = 1.0
-learning_rate = 0.01
-#num_steps = 70
-num_steps = 200
-density_min = 0.0
-density_max = 1.0
-
-# Define gradient bounds
-lower = 1E-2
-upper = 20
-
-max_time = 5.0E-03
-
-# Optax optimizer
-optimizer = optax.adam(learning_rate)
-opt_state = optimizer.init(param)
-
-# Optimization loop
-damage_threshold = 0.5
-
-# Loss function (already defined as 'loss')
-loss_and_grad = jax.value_and_grad(loss, argnums=3)
-
-# Clamp function
-def clamp_params(grads):
-    lower = 1E-05
-    upper = 1.0E10
-    #jax.debug.print("entering clamp_params: {t}", t=grads)
-    grads = jax.tree_util.tree_map(lambda x: jnp.clip(jnp.abs(x), lower, upper), grads)
-    #jax.debug.print("grad after clamping: {t}", t=grads)
-    return grads
-
-def make_symmetric_density(top_params, left_fixed_density, right_fixed_density):
-    """Return full symmetric density array of shape (num_nodes,), symmetric in y and x, then reflected across x=0."""
-    
-    # Initialize full density field
-    full_density_field = jnp.full((num_nodes,), density_field)
-    
-    # Set the optimized top half
-    full_density_field = full_density_field.at[top_half_middle].set(top_params)
-    
-    # Step 1: Mirror about y=0 (reflect y-coordinates to create bottom half)
-    for i, node in enumerate(top_half_middle):
-        x, y = params.pd_nodes[node]
-        # Find closest node to (x, -y) — correct reflection over y=0
-        dist = jnp.sum((params.pd_nodes - jnp.array([x, -y]))**2, axis=1)
-        mirrored_y_node = jnp.argmin(dist)
-        full_density_field = full_density_field.at[mirrored_y_node].set(top_params[i])
-    
-    # Now full_density_field has symmetry in y (top and bottom mirrored)
-    
-    # Step 2: Mirror about x=0 (reflect x-coordinates to create left and right halves)
-    # Mirror the current structure (left to right)
-    for node in range(num_nodes):
-        if full_density_field[node] != density_field:  # Only mirror set values
-            x, y = params.pd_nodes[node]
-            # Find closest node to (-x, y)
-            dist = jnp.sum((params.pd_nodes - jnp.array([-x, y]))**2, axis=1)
-            mirrored_x_node = jnp.argmin(dist)
-            full_density_field = full_density_field.at[mirrored_x_node].set(full_density_field[node])
-    '''
-    # Step 3: Reflect the entire structure across x=0 (flip x for all nodes, swapping left/right)
-    reflected_density = jnp.full((num_nodes,), density_field)
-    for node in range(num_nodes):
-        x, y = params.pd_nodes[node]
-        # Find closest node to (-x, y)
-        dist = jnp.sum((params.pd_nodes - jnp.array([-x, y]))**2, axis=1)
-        mirrored_node = jnp.argmin(dist)
-        reflected_density = reflected_density.at[node].set(full_density_field[mirrored_node])
-    full_density_field = reflected_density
-    '''
-    # Fix the outer ends (no-damage regions)
-    full_density_field = full_density_field.at[no_damage_region_left].set(left_fixed_density)
-    full_density_field = full_density_field.at[no_damage_region_right].set(right_fixed_density)
-    
-    return full_density_field
-
-# Optimization loop
-for step in range(num_steps):
-    def true_fn(thickness):
-        jax.debug.print("thickness is all finite.")
-        return thickness
-
-    def false_fn(thickness):
-        jax.debug.print("Non-finite thickness detected: {t}", t=thickness)
-        return thickness
-
-    full_density_field = make_symmetric_density(param, left_fixed_density, right_fixed_density)
-    assert jnp.all(jnp.isfinite(param)), "Initial density contains NaNs!"
-
-    # enforce fixed region if needed
-    full_density_field = full_density_field.at[no_damage_region_left].set(left_fixed_density)
-    full_density_field = full_density_field.at[no_damage_region_right].set(right_fixed_density)
-
-    # Compute loss and gradients (grads wrt full_density_field)
-    loss_val, grads_full = loss_and_grad(
-        params, state, thickness, full_density_field, 
-        forces_array, allow_damage, max_time)
-
-    # Extract grads only for the optimizable top half
-    grads = grads_full[optimizable_indices]
-
-    updates, opt_state = optimizer.update(grads, opt_state, param)
-    param = optax.apply_updates(param, updates)
- 
-    # Enforcing density bounds of 0-1
-    param = jnp.clip(param, 0.0, 1.0)
- 
-    # Now compute strain_energy and damage separately for plotting
-    output_vals = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
-
-    loss_to_plot.append(loss_val)
-    strain_energy_to_plot.append(output_vals.strain_energy)
- 
-    # Compute final damage for plotting
-    final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
-    damage_to_plot.append(final_damage)
-
-   # Check if all damage is below 0.5 and exit early if so
-    if jnp.all(final_damage < 0.5):
-        print(f"Early exit at step {step}: All damage values are below 0.5")
-        break
- 
-    #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
-    print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
-    #print("total damage in optimization loop: ", output_vals.damage.sum())
-    #print("damage in optimization loop: ", damage[-1])
-
-
-
-############## plotting of velocity arrows on original structure ###############
-from matplotlib.collections import PolyCollection
-import os
-
-plt.clf()
-
-# Configure LaTeX rendering
-mpl.rcParams.update({
-    "pgf.texsystem": "pdflatex",  # Or "xelatex" or "lualatex"
-    "text.usetex": True,          # Use LaTeX for all text
-    "font.family": "serif",       # Use a serif font
-    "pgf.rcfonts": False,})
-
-forces_to_apply = results.forces_array
-damages = results.damage
-displacements = results.disp_array  # Shape: (num_frames, num_nodes) - x-displacements only
-velocities = results.velo_array     # Shape: (num_frames, num_nodes) - x-velocities only
-
-nodes = params.pd_nodes  # Shape: (num_nodes, 2) for 2D positions (x, y)
-num_nodes = nodes.shape[0]
-
-# ----------------------------------
-# HARD-CODED LEFT/RIGHT DIRECTIONS BASED ON X-COORDINATE
-# ----------------------------------
-midpoint = 0.5 * (nodes[:, 0].min() + nodes[:, 0].max())
-
-# Arrows on left half → rightward (+1 in U), right half → leftward (-1 in U)
-direction_mask = np.where(nodes[:, 0] < midpoint, 1.0, -1.0)
-
-# ---- FIGURE SETUP ----
-fig, ax = plt.subplots()
-
-# Initialize quiver with zeros (correct shape to avoid size mismatch)
-Q = ax.quiver(
-    np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes),
-    np.zeros(num_nodes),
-    cmap="viridis",
-    clim=[0, 80],
-    angles='xy',
-    scale_units='xy',
-    scale=0.3,
-    width=0.008,
-    headwidth=6,
-    headlength=8,
-    headaxislength=7,
-    zorder=10,      # arrows on top
-    alpha=1.0       # fully opaque
-)
-
-ax.set_xlabel("X Position")
-ax.set_ylabel("Y Position")
-ax.set_xlim(nodes[:, 0].min() - 0.5, nodes[:, 0].max() + 0.5)
-ax.set_ylim(nodes[:, 1].min() - 0.5, nodes[:, 1].max() + 0.5)
-ax.set_title("Velocity Arrows Propagating Through the Bar")
-
-cbar = fig.colorbar(Q, ax=ax)
-cbar.set_label("Velocity Magnitude")
-
-# ----------------------------------
-# INIT FUNCTION
-# ----------------------------------
-def init():
-    # Set initial positions to original nodes (no deformation), UVC to zeros
-    Q.set_offsets(nodes)  # Shape: (num_nodes, 2)
-    Q.set_UVC(np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes))
-    return Q,
-
-# Precompute global max velocity for scaling
-global_max_vel = np.max(np.abs(velocities))
-min_arrow_length = 0.05  # minimum arrow length for visibility
-
-# ----------------------------------
-# UPDATE FUNCTION
-# ----------------------------------
-# ----------------------------------
-def update(frame):
-    disp_x = displacements[frame]  # Shape: (num_nodes,) - x-displacements
-    vel_x = velocities[frame]      # Shape: (num_nodes,) - x-velocities
-
-    # Deformed positions: add disp_x to x-coords, keep y unchanged (since disp_y not saved)
-    deformed_positions = np.column_stack([nodes[:, 0] + disp_x, nodes[:, 1]])  # Shape: (num_nodes, 2)
-
-    # Velocity magnitude: |vel_x| (since only vel_x saved)
-    vel_mag = np.abs(vel_x)  # Shape: (num_nodes,)
-
-    # Arrow directions based on velocity sign (positive vel_x -> right, negative -> left)
-    scaled_U = np.sign(vel_x) * (vel_mag / (global_max_vel + 1e-12)) * 0.3
-    # Enforce minimum arrow length
-    U = np.where(np.abs(scaled_U) < min_arrow_length,
-                 np.sign(scaled_U) * min_arrow_length,
-                 scaled_U)
-    V = np.zeros(num_nodes)
-
-    # Update quiver: positions and UVC
-    Q.set_offsets(deformed_positions)
-    Q.set_UVC(U, V, vel_mag)
-
-    ax.set_title(
-        f"Velocity Field (Frame {frame}), "
-        f"Force={forces_to_apply[frame]:.3e}"
-    )
-
-    return Q,
-
-
-#### with arrows hard coded for direction 
-'''
-def update(frame):
-    disp_x = displacements[frame]  # Shape: (num_nodes,) - x-displacements
-    vel_x = velocities[frame]      # Shape: (num_nodes,) - x-velocities
-
-    # Deformed positions: add disp_x to x-coords, keep y unchanged (since disp_y not saved)
-    deformed_positions = np.column_stack([nodes[:, 0] + disp_x, nodes[:, 1]])  # Shape: (num_nodes, 2)
-
-    # Velocity magnitude: |vel_x| (since only vel_x saved)
-    vel_mag = np.abs(vel_x)  # Shape: (num_nodes,)
-
-    # HARD-CODED ARROW DIRECTIONS (only in x-direction, V=0)
-    scaled_U = direction_mask * (vel_mag / (global_max_vel + 1e-12)) * 0.3
-    # Enforce minimum arrow length
-    U = np.where(np.abs(scaled_U) < min_arrow_length,
-                 np.sign(scaled_U) * min_arrow_length,
-                 scaled_U)
-    V = np.zeros(num_nodes)
-
-    # Update quiver: positions and UVC
-    Q.set_offsets(deformed_positions)
-    Q.set_UVC(U, V, vel_mag)
-
-    ax.set_title(
-        f"Velocity Field (Frame {frame}), "
-        f"Force={forces_to_apply[frame]:.3e}"
-    )
-
-    return Q,
-'''
-
-# ----------------------------------
-# ANIMATION
-# ----------------------------------
-ani = animation.FuncAnimation(
-    fig,
-    update,
-    frames=len(displacements),
-    init_func=init,
-    blit=False,
-    repeat=False
-)
-
-plt.tight_layout()
-
-# ----------------------------------
-# SAVE SPECIFIC FRAMES
-# ----------------------------------
-frames_to_save = [1, 7, 13]  # Adjust as needed
-os.makedirs("saved_frames", exist_ok=True)
-
-for frame in frames_to_save:
-    init()
-    update(frame)
-    fig.canvas.draw()  # ensure fully rendered
-    # Add a boxed comment in the middle of the plot (adjust text as needed)
-    #ax.text(0, 0.18, "(c) 501.5 MPa", ha='center', va='top', fontsize=12, fontweight='normal',
-        #bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="black"), zorder=10)
-
-    # **Remove the title for saved frames**
-    ax.set_title("")
-
-    fig.savefig(f"saved_frames/velocity_arrows_frame_{frame}.png",
-                dpi=300, bbox_inches='tight')
-    print(f"Saved frame {frame} as velocity_arrows_frame_{frame}.png")
-
-plt.show()
-
-# Save animation
-ani.save("2D_velocity_arrows.gif", writer="imagemagick", fps=1)
-#####################################################################################################
-#####################################################################################################
-
-
-############################ plotting of velocity arrows on optimized structure ######################
 from matplotlib.collections import PolyCollection
 import os
 
@@ -1765,7 +1408,9 @@ ax.set_xlabel("X Position")
 ax.set_ylabel("Y Position")
 ax.set_xlim(solid_nodes[:, 0].min() - 0.5, solid_nodes[:, 0].max() + 0.5)
 ax.set_ylim(solid_nodes[:, 1].min() - 0.5, solid_nodes[:, 1].max() + 0.5)
-ax.set_title("Velocity Arrows on Optimized Structure")
+ax.set_aspect('equal')
+ax.set_adjustable('box')
+ax.set_title("Optimized Structure")
 
 cbar = fig.colorbar(Q, ax=ax)
 cbar.set_label("Velocity Magnitude")
@@ -1814,7 +1459,7 @@ def update(frame):
     Q.set_UVC(U, V, vel_mag)
 
     ax.set_title(
-        f"Velocity Field on Optimized Structure (Frame {frame}), "
+        f"Opt Structure Velocity Field (Frame {frame}), "
         f"Force={forces_to_apply[frame]:.3e}"
     )
 
@@ -1867,12 +1512,12 @@ ani = animation.FuncAnimation(
     repeat=False
 )
 
-plt.tight_layout()
+#plt.tight_layout()
 
 # ----------------------------------
 # SAVE SPECIFIC FRAMES
 # ----------------------------------
-frames_to_save = [1, 7, 13]  # Adjust as needed
+frames_to_save = [0, 1, 7, 13]  # Adjust as needed
 os.makedirs("saved_frames", exist_ok=True)
 
 for frame in frames_to_save:
@@ -1893,6 +1538,188 @@ for frame in frames_to_save:
 plt.show()
 
 # Save animation
-ani.save("2D_velocity_arrows_opt.gif", writer="imagemagick", fps=1)
-######################################################################################################
-######################################################################################################
+ani.save("2D_velocity_arrows_opt_incSteps.gif", writer="imagemagick", fps=1)
+
+##################################################################################################
+############### plotting velocity arrows in intitial structure ###################################
+
+from matplotlib.collections import PolyCollection
+import os
+
+plt.clf()
+
+# Configure LaTeX rendering
+mpl.rcParams.update({
+    "pgf.texsystem": "pdflatex",  # Or "xelatex" or "lualatex"
+    "text.usetex": True,          # Use LaTeX for all text
+    "font.family": "serif",       # Use a serif font
+    "pgf.rcfonts": False,})
+
+forces_to_apply = results.forces_array
+damages = results.damage
+displacements = results.disp_array  # Shape: (num_frames, num_nodes) - x-displacements only
+velocities = results.velo_array     # Shape: (num_frames, num_nodes) - x-velocities only
+
+nodes = params.pd_nodes  # Shape: (num_nodes, 2) for 2D positions (x, y)
+num_nodes = nodes.shape[0]
+
+# ----------------------------------
+# HARD-CODED LEFT/RIGHT DIRECTIONS BASED ON X-COORDINATE
+# ----------------------------------
+midpoint = 0.5 * (nodes[:, 0].min() + nodes[:, 0].max())
+
+# Arrows on left half → rightward (+1 in U), right half → leftward (-1 in U)
+direction_mask = np.where(nodes[:, 0] < midpoint, 1.0, -1.0)
+
+# ---- FIGURE SETUP ----
+fig, ax = plt.subplots()
+
+# Initialize quiver with zeros (correct shape to avoid size mismatch)
+Q = ax.quiver(
+    np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes),
+    np.zeros(num_nodes),
+    cmap="viridis",
+    clim=[0, 80],
+    angles='xy',
+    scale_units='xy',
+    scale=0.3,
+    width=0.008,
+    headwidth=6,
+    headlength=8,
+    headaxislength=7,
+    zorder=10,      # arrows on top
+    alpha=1.0       # fully opaque
+)
+
+ax.set_xlabel("X Position")
+ax.set_ylabel("Y Position")
+ax.set_xlim(nodes[:, 0].min() - 0.5, nodes[:, 0].max() + 0.5)
+ax.set_ylim(nodes[:, 1].min() - 0.5, nodes[:, 1].max() + 0.5)
+ax.set_aspect('equal')
+ax.set_adjustable('box')
+ax.set_title("Optimized Structure")
+
+cbar = fig.colorbar(Q, ax=ax)
+cbar.set_label("Velocity Magnitude")
+
+# ----------------------------------
+# INIT FUNCTION
+# ----------------------------------
+def init():
+    # Set initial positions to original nodes (no deformation), UVC to zeros
+    Q.set_offsets(nodes)  # Shape: (num_nodes, 2)
+    Q.set_UVC(np.zeros(num_nodes), np.zeros(num_nodes), np.zeros(num_nodes))
+    return Q,
+
+# Precompute global max velocity for scaling
+global_max_vel = np.max(np.abs(velocities))
+min_arrow_length = 0.05  # minimum arrow length for visibility
+
+# ----------------------------------
+# UPDATE FUNCTION
+# ----------------------------------
+# ----------------------------------
+def update(frame):
+    disp_x = displacements[frame]  # Shape: (num_nodes,) - x-displacements
+    vel_x = velocities[frame]      # Shape: (num_nodes,) - x-velocities
+
+    # Deformed positions: add disp_x to x-coords, keep y unchanged (since disp_y not saved)
+    deformed_positions = np.column_stack([nodes[:, 0] + disp_x, nodes[:, 1]])  # Shape: (num_nodes, 2)
+
+    # Velocity magnitude: |vel_x| (since only vel_x saved)
+    vel_mag = np.abs(vel_x)  # Shape: (num_nodes,)
+
+    # Arrow directions based on velocity sign (positive vel_x -> right, negative -> left)
+    scaled_U = np.sign(vel_x) * (vel_mag / (global_max_vel + 1e-12)) * 0.3
+    # Enforce minimum arrow length
+    U = np.where(np.abs(scaled_U) < min_arrow_length,
+                 np.sign(scaled_U) * min_arrow_length,
+                 scaled_U)
+    V = np.zeros(num_nodes)
+
+    # Update quiver: positions and UVC
+    Q.set_offsets(deformed_positions)
+    Q.set_UVC(U, V, vel_mag)
+
+    ax.set_title(
+        f"Init Structure Velocity Field (Frame {frame}), "
+        f"Force={forces_to_apply[frame]:.3e}"
+    )
+
+    
+
+    return Q,
+
+
+#### with arrows hard coded for direction 
+'''
+def update(frame):
+    disp_x = displacements[frame]  # Shape: (num_nodes,) - x-displacements
+    vel_x = velocities[frame]      # Shape: (num_nodes,) - x-velocities
+
+    # Deformed positions: add disp_x to x-coords, keep y unchanged (since disp_y not saved)
+    deformed_positions = np.column_stack([nodes[:, 0] + disp_x, nodes[:, 1]])  # Shape: (num_nodes, 2)
+
+    # Velocity magnitude: |vel_x| (since only vel_x saved)
+    vel_mag = np.abs(vel_x)  # Shape: (num_nodes,)
+
+    # HARD-CODED ARROW DIRECTIONS (only in x-direction, V=0)
+    scaled_U = direction_mask * (vel_mag / (global_max_vel + 1e-12)) * 0.3
+    # Enforce minimum arrow length
+    U = np.where(np.abs(scaled_U) < min_arrow_length,
+                 np.sign(scaled_U) * min_arrow_length,
+                 scaled_U)
+    V = np.zeros(num_nodes)
+
+    # Update quiver: positions and UVC
+    Q.set_offsets(deformed_positions)
+    Q.set_UVC(U, V, vel_mag)
+
+    ax.set_title(
+        f"Velocity Field (Frame {frame}), "
+        f"Force={forces_to_apply[frame]:.3e}"
+    )
+
+    return Q,
+'''
+
+# ----------------------------------
+# ANIMATION
+# ----------------------------------
+ani = animation.FuncAnimation(
+    fig,
+    update,
+    frames=len(displacements),
+    init_func=init,
+    blit=False,
+    repeat=False
+)
+
+plt.tight_layout()
+
+# ----------------------------------
+# SAVE SPECIFIC FRAMES
+# ----------------------------------
+frames_to_save = [0, 1, 7, 13, 17, 25]  # Adjust as needed
+os.makedirs("saved_frames", exist_ok=True)
+
+for frame in frames_to_save:
+    init()
+    update(frame)
+    fig.canvas.draw()  # ensure fully rendered
+    # Add a boxed comment in the middle of the plot (adjust text as needed)
+    #ax.text(0, 0.18, "(c) 501.5 MPa", ha='center', va='top', fontsize=12, fontweight='normal',
+        #bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="black"), zorder=10)
+
+    # **Remove the title for saved frames**
+    ax.set_title("")
+    
+
+    fig.savefig(f"saved_frames/velocity_arrows_frame_{frame}.png",
+                dpi=300, bbox_inches='tight')
+    print(f"Saved frame {frame} as velocity_arrows_frame_{frame}.png")
+
+plt.show()
+
+# Save animation
+ani.save("2D_velocity_arrows_incSteps.gif", writer="imagemagick", fps=1)
