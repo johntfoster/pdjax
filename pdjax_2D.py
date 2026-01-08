@@ -438,7 +438,6 @@ def compute_partial_volumes(params, thickness:jax.Array, density_field:jax.Array
 	rev_vol_state = jnp.maximum(rev_vol_state, EPS_vol)
 
 	return (vol_state, rev_vol_state)
-
 '''
 @jax.jit
 def my_where(x: jax.Array):
@@ -648,11 +647,12 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	E = 200E9
 	nu = 0.34
-	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 
 	# Assuming pos_x and pos_y are arrays of shape (num_nodes,), and ref_mag_state is (num_nodes, max_neighbors)
 	# E, nu, horizon are scalars
-
+	
+	'''
 	# Compute element-wise max of pos_x and pos_y
 	max_pos = jnp.maximum(jnp.abs(pos_x), jnp.abs(pos_y))  # Shape: (num_nodes,)
 
@@ -672,7 +672,8 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 
 	# Compute c_bond
 	c_bond = 24 * E / (jnp.pi * horizon**3 * (1 - nu)) * (1 - evaluate_at / horizon)  # Shape: (num_nodes, max_neighbors)
-
+	'''
+ 
 	# compute scalar_force_state and bond_strain_energy including the bond-specific stiffness
 	scalar_force_state = c_bond * safe_divide(exten_state, ref_mag_state) * inf_state_updated
 	bond_strain_energy = 0.5 * c_bond * safe_divide(exten_state**2, ref_mag_state) * inf_state_updated
@@ -724,20 +725,47 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     If step_number is one we want to save, write disp_value at that index,
     otherwise return disp_array unchanged.
     """
-    mask = jnp.logical_or(
-        # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
-
-        # Phase 2: 6000-15000, every 1000 steps
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                step_number % 4000 == 0
-            )
-        )
-    )
+    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
     
+    ### best for optimized geometry plots ####
+    '''
+    mask = jnp.logical_or(
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)
+    '''
+    
+    ### best for initial geometry plots ###
+    mask = jnp.logical_or(
+    jnp.logical_or(
+        step_number < 1000,
+        jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+    ),
+    jnp.logical_and(step_number >= 2000, step_number % 5000 == 0)
+)
+    '''
+    mask = jnp.logical_or(
+		# Phase 1: 0-300, every 50, set to 300 for creating velocity propagation plots
+		jnp.logical_and(step_number <= 500, step_number % 50 == 0),
+		jnp.logical_or(
+			jnp.logical_and(
+				step_number >= 50,
+				jnp.logical_and(
+					step_number <= 300,
+					step_number % 1000 == 0
+				)
+			),
+			# Phase 2: 6000-15000, every 4000, set to 1000 for propagation plots
+			jnp.logical_and(
+				step_number >= 6000,
+				jnp.logical_and(
+					step_number <= 15000,
+					step_number % 3000 == 0
+				)
+			)
+		)
+	)
+    '''
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(disp_value)
@@ -747,17 +775,24 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
 
 @jax.jit
 def save_if_needed(forces_array, force_value, step_number):
+    #mask = jnp.logical_and(step_number <= 1000, step_number % 50 == 0)
+    
+    ### best for optimized geometry plots ####
+    '''
     mask = jnp.logical_or(
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 2000) == 0),
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                lax.rem(step_number, 4000) == 0
-            )
-        )
-    )
-
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)
+    '''
+    
+    ### best for initial geometry plots ###
+    mask = jnp.logical_or(
+    jnp.logical_or(
+        step_number < 1000,
+        jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+    ),
+    jnp.logical_and(step_number >= 2000, step_number % 5000 == 0)
+)
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(force_value)
@@ -767,16 +802,22 @@ def save_if_needed(forces_array, force_value, step_number):
 
 @jax.jit
 def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, force_value):
+    ### best for optimized geometry plots ####
+    '''
     mask = jnp.logical_or(
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 2000) == 0),
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                lax.rem(step_number, 4000) == 0
-            )
-        )
-    )
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)
+    '''
+    
+    ### best for initial geometry plots ###
+    mask = jnp.logical_or(
+    jnp.logical_or(
+        step_number < 1000,
+        jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+    ),
+    jnp.logical_and(step_number >= 2000, step_number % 5000 == 0)
+)
     # Use lax.cond to choose branch without Python-side branching
     
     def write(arr):
@@ -792,20 +833,22 @@ def save_velo_if_needed(velo_array, velo_value, step_number):
     If step_number is one we want to save, write velo_value at that index,
     otherwise return velo_array unchanged.
     """
+    ### best for optimized geometry plots ####
+    '''
     mask = jnp.logical_or(
-        # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
-
-        # Phase 2: 6000-15000, every 1000 steps
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                step_number % 4000 == 0
-            )
-        )
-    )
-
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)
+    '''
+    
+    ### best for initial geometry plots ###
+    mask = jnp.logical_or(
+    jnp.logical_or(
+        step_number < 1000,
+        jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+    ),
+    jnp.logical_and(step_number >= 2000, step_number % 5000 == 0)
+)
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(velo_value)
@@ -1057,20 +1100,48 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     # Using mask to save forces at desired steps for plotting animation
     step_inds = jnp.arange(num_steps)
     
-    
+    ###### best for plotting the optimized geometry ######
+    '''
+    #mask_all = jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0)
     mask_all = jnp.logical_or(
-        # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_inds <= 6000, step_inds % 2000 == 0),
-
-        # Phase 2: 6000-15000, every 1000 steps
-        jnp.logical_and(
-            step_inds >= 6000,
-            jnp.logical_and(
-                step_inds <= 15000,
-                step_inds % 4000 == 0
-            )
-        )
-    )
+    jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0),
+    jnp.logical_and(jnp.logical_and(step_inds >= 1000, step_inds <= 1600), step_inds % 200 == 0)
+)
+	'''
+    
+    ######## best for plotting the initial geometry ######
+    mask_all = jnp.logical_or(
+    jnp.logical_or(
+        jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0),
+        jnp.logical_and(jnp.logical_and(step_inds >= 1000, step_inds <= 1600), step_inds % 200 == 0)
+    ),
+    jnp.logical_and(step_inds >= 2000, step_inds % 5000 == 0)
+)
+    
+    '''
+    mask_all = jnp.logical_or(
+		# Phase 1: 0-300, every 50, set to 100 for creating velocity propagation plots
+		jnp.logical_and(step_inds <= 300, step_inds % 50 == 0),
+		jnp.logical_or(
+			# Phase 1.5: 300-6000, every 100, set to 1000 for propagation plots
+			jnp.logical_and(
+				step_inds >= 300,
+				jnp.logical_and(
+					step_inds <= 6000,
+					step_inds % 1000 == 0
+				)
+			),
+			# Phase 2: 6000-15000, every 4000, set to 1000 for propagation plots
+			jnp.logical_and(
+				step_inds >= 6000,
+				jnp.logical_and(
+					step_inds <= 15000,
+					step_inds % 3000 == 0
+				)
+			)
+		)
+	)
+ '''
 
     #jax.debug.print("disp vals returened: {d}", d=vals_returned[0])
     #jax.debug.print("vals returned [1] {v}", v=vals_returned[1])
@@ -1179,10 +1250,6 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     #final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
     #final_damage = output_vals[10]
     final_damage = output_vals[11][-1]
-    
-    #jax.debug.print("density_field in loss: {f}", f=density_field)
-    #loss_value = jnp.linalg.norm(final_damage, ord=1) + (np.linalg.norm(final_damage, ord=1) / (1 + density_field.sum()))  # Reduces density's direct impact
-    #loss_value = jnp.linalg.norm(final_damage, ord=1)  * ( 1 + 1 /density_field.sum()) 
     loss_value = jnp.linalg.norm(final_damage, ord=1)
     #loss_value = jnp.linalg.norm(final_damage, ord=2)
     
@@ -1203,21 +1270,11 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     # Sum all differences as the perimeter penalty
     #perimeter_penalty = (jnp.sum(diff_x) + jnp.sum(diff_y)) * 0.1 # for scaling
 
-    #loss_value = 0.95 * jnp.linalg.norm(final_damage, ord=1) + 0.01 * (density_field.sum() / 400.0)
     
-    #damage_norm = jnp.linalg.norm(final_damage, ord=1)
-    #density_penalty = density_field.sum() / 400.0
-    #loss_value = 0.9 * damage_norm + 0.1 * (damage_norm / (1 + density_penalty))  # Reduces density's direct impact
-    #loss_value = 0.95 * damage_norm + 0.1 * (damage_norm / (0.01 * density_field.sum()))  # Reduces density's direct impact
-    #loss_value = damage_norm + (damage_norm / (0.01 * density_field.sum()))  # Reduces density's direct impact
-        
-    #loss_value = 0.95 * jnp.linalg.norm(final_damage, ord=1) + 0.05 * (density_field.sum()/400.0)  # Added initial density for scaling
+    #loss_value = 0.9 * jnp.linalg.norm(final_damage, ord=1) + 0.1 * perimeter_penalty
     #loss_value = 0.9 * final_damage.sum() + 0.1 * perimeter_penalty
-    #jax.debug.print("L1 norm final_damage in loss: {f}", f=damage_norm )
-    #jax.debug.print("density penalty in loss: {d}", d=damage_norm / (0.01 * density_field.sum()))
-    #jax.debug.print("weighted L1 norm value in loss: {w}", w= 0.95 * damage_norm)
-    #jax.debug.print("weighted density sum value in loss: {w}", w=0.1 * (damage_norm / (0.01 * density_field.sum())))
 
+    
     return loss_value
 
 
@@ -1244,6 +1301,7 @@ if __name__ == "__main__":
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
     prescribed_force = 3.0E10
+
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
@@ -1349,7 +1407,6 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
-
     
 
 ##################################################
@@ -1401,9 +1458,10 @@ loss_to_plot = []
 damage_to_plot = []
 strain_energy_to_plot = []
 
-learning_rate = 0.1
+#learning_rate = 1.0
+learning_rate = 0.01
 #num_steps = 70
-num_steps = 20
+num_steps = 200
 density_min = 0.0
 density_max = 1.0
 
@@ -1411,7 +1469,7 @@ density_max = 1.0
 lower = 1E-2
 upper = 20
 
-max_time = 1.0E-02
+max_time = 5.0E-03
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
