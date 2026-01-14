@@ -394,19 +394,19 @@ def compute_partial_volumes(params, thickness:jax.Array, density_field:jax.Array
 
 	###### 1D partial volume calculations, no transferable in 2D ######
 	# Check to see if the neighboring node has a partial volume
-	is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
+	#is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
 	#is_partial_volume = jnp.abs(horiz - ref_mag_state) < lens[neigh] / 2.0
 	#jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(is_partial_volume)))
 
 	# Two different scenarios:
-	is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
-	is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
+	#is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
+	#is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
 	#is_partial_volume_case1 = is_partial_volume * (ref_mag_state >= horiz)
 	#is_partial_volume_case2 = is_partial_volume * (ref_mag_state < horiz)
 
 	# Compute the partial volumes conditionally
-	vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[neigh], vol_state)
-	vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[neigh], vol_state)
+	#vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[neigh], vol_state)
+	#vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[neigh], vol_state)
 	#vol_state = jnp.where(is_partial_volume_case1, (lens[neigh] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[neigh], vol_state)
 	#vol_state = jnp.where(is_partial_volume_case2, (lens[neigh] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[neigh], vol_state)
 
@@ -429,8 +429,8 @@ def compute_partial_volumes(params, thickness:jax.Array, density_field:jax.Array
 
 	#jax.debug.print("Any NaNs? {y}", y=jnp.any(jnp.isnan(rev_vol_state)))
 
-	rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[:, None], rev_vol_state)
-	rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[:, None], rev_vol_state)
+	#rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[:, None], rev_vol_state)
+	#rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[:, None], rev_vol_state)
 	##### again, 1D partial volume calculations not transferable to 2D #####
 	#rev_vol_state = jnp.where(is_partial_volume_case1, (lens[:, None] / 2.0 - (ref_mag_state - horiz)) * dy * thickness[:, None], rev_vol_state)
 	#rev_vol_state = jnp.where(is_partial_volume_case2, (lens[:, None] / 2.0 + (horiz - ref_mag_state)) * dy * thickness[:, None], rev_vol_state)
@@ -1344,7 +1344,7 @@ if __name__ == "__main__":
     #print("thickness: ", thickness0)
     #print("thickness shape: ", thickness0.shape)
     #print("num_elems: ", num_elems)
-    results = _solve(params, state, thickness0, filtered_density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     #jax.debug.print("allow_damage in main: {a}", a=allow_damage)
 
 
