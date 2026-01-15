@@ -1422,6 +1422,7 @@ loss_to_plot = []
 damage_to_plot = []
 strain_energy_to_plot = []
 
+# use LR=0.1 for optimized struct w/ el length 0.25 in 2D
 learning_rate = 0.1
 #num_steps = 70
 num_steps = 20
