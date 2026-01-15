@@ -1549,3 +1549,6 @@ for step in range(num_steps):
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
     #print("total damage in optimization loop: ", output_vals.damage.sum())
     #print("damage in optimization loop: ", damage[-1])
+    
+    
+    #### made change
