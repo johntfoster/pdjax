@@ -1248,7 +1248,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.25       # Element length
+    delta_x = 0.20       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1344,7 +1344,7 @@ if __name__ == "__main__":
     #print("thickness: ", thickness0)
     #print("thickness shape: ", thickness0.shape)
     #print("num_elems: ", num_elems)
-    results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, filtered_density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     #jax.debug.print("allow_damage in main: {a}", a=allow_damage)
 
 
@@ -1422,6 +1422,8 @@ loss_to_plot = []
 damage_to_plot = []
 strain_energy_to_plot = []
 
+learning_rate = 0.01
+
 # use LR=0.1 for optimized struct w/ el length 0.25 in 2D
 learning_rate = 0.1
 #num_steps = 70
@@ -1433,7 +1435,9 @@ density_max = 1.0
 lower = 1E-2
 upper = 20
 
-max_time = 1.0E-02
+#max_time = 1.0E-02
+max_time = 5.0E-03
+
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
@@ -1549,6 +1553,3 @@ for step in range(num_steps):
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
     #print("total damage in optimization loop: ", output_vals.damage.sum())
     #print("damage in optimization loop: ", damage[-1])
-    
-    
-    #### made change
