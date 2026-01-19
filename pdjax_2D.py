@@ -747,6 +747,7 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     If step_number is one we want to save, write disp_value at that index,
     otherwise return disp_array unchanged.
     """
+    '''
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
         jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
@@ -760,7 +761,17 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
             )
         )
     )
-
+    '''
+	
+    
+    ################################
+    
+    # for creating gif
+    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
+    mask = jnp.logical_or(
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)	
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(disp_value)
@@ -770,17 +781,12 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
 
 @jax.jit
 def save_if_needed(forces_array, force_value, step_number):
+    # for creating gif
+    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
     mask = jnp.logical_or(
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 2000) == 0),
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                lax.rem(step_number, 4000) == 0
-            )
-        )
-    )
-
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)	
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(force_value)
@@ -790,16 +796,12 @@ def save_if_needed(forces_array, force_value, step_number):
 
 @jax.jit
 def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, force_value):
+    # for creating gif
+    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
     mask = jnp.logical_or(
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 2000) == 0),
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                lax.rem(step_number, 4000) == 0
-            )
-        )
-    )
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)	
     # Use lax.cond to choose branch without Python-side branching
 
     def write(arr):
@@ -815,19 +817,12 @@ def save_velo_if_needed(velo_array, velo_value, step_number):
     If step_number is one we want to save, write velo_value at that index,
     otherwise return velo_array unchanged.
     """
+    # for creating gif
+    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
     mask = jnp.logical_or(
-        # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
-
-        # Phase 2: 6000-15000, every 1000 steps
-        jnp.logical_and(
-            step_number >= 6000,
-            jnp.logical_and(
-                step_number <= 15000,
-                step_number % 4000 == 0
-            )
-        )
-    )
+    step_number < 1000,
+    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
+)	
 
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
@@ -1080,7 +1075,7 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     # Using mask to save forces at desired steps for plotting animation
     step_inds = jnp.arange(num_steps)
 
-
+    '''# to run optimization
     mask_all = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
         jnp.logical_and(step_inds <= 6000, step_inds % 2000 == 0),
@@ -1093,7 +1088,14 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
                 step_inds % 4000 == 0
             )
         )
-    )
+    ) '''
+    
+    
+    # to save when creating steps for gif 
+    mask_all = jnp.logical_or(
+    jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0),
+    jnp.logical_and(jnp.logical_and(step_inds >= 1000, step_inds <= 1600), step_inds % 200 == 0)
+)	
 
     #jax.debug.print("disp vals returened: {d}", d=vals_returned[0])
     #jax.debug.print("vals returned [1] {v}", v=vals_returned[1])
@@ -1248,7 +1250,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.20       # Element length
+    delta_x = 0.17       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1373,6 +1375,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
+####################################################
 ##################################################
 # # Now using Optax to maximize
 # scalar param
@@ -1422,10 +1425,10 @@ loss_to_plot = []
 damage_to_plot = []
 strain_energy_to_plot = []
 
-learning_rate = 0.01
+learning_rate = 0.1
 
 # use LR=0.1 for optimized struct w/ el length 0.25 in 2D
-learning_rate = 0.1
+#learning_rate = 0.1
 #num_steps = 70
 num_steps = 20
 density_min = 0.0
