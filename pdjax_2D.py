@@ -747,7 +747,11 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     If step_number is one we want to save, write disp_value at that index,
     otherwise return disp_array unchanged.
     """
+    # New mask (save every 50,000 steps only)
+    mask = step_number % 50000 == 0 
+    
     '''
+    # mask for plotting damage profile and running simulation
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
         jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
@@ -760,10 +764,10 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
                 step_number % 4000 == 0
             )
         )
-    )
-    '''
-	
+    )'''
     
+	
+    '''
     ################################
     
     # for creating gif
@@ -771,7 +775,7 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     mask = jnp.logical_or(
     step_number < 1000,
     jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
-)	
+)	'''
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(disp_value)
@@ -781,12 +785,9 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
 
 @jax.jit
 def save_if_needed(forces_array, force_value, step_number):
-    # for creating gif
-    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
-    mask = jnp.logical_or(
-    step_number < 1000,
-    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
-)	
+    # New mask (save every 50,000 steps only)
+    mask = step_number % 50000 == 0 
+    
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(force_value)
@@ -796,12 +797,9 @@ def save_if_needed(forces_array, force_value, step_number):
 
 @jax.jit
 def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, force_value):
-    # for creating gif
-    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
-    mask = jnp.logical_or(
-    step_number < 1000,
-    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
-)	
+    # New mask (save every 50,000 steps only)
+    mask = step_number % 50000 == 0 
+    
     # Use lax.cond to choose branch without Python-side branching
 
     def write(arr):
@@ -813,16 +811,8 @@ def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, ste
 
 @jax.jit
 def save_velo_if_needed(velo_array, velo_value, step_number):
-    """
-    If step_number is one we want to save, write velo_value at that index,
-    otherwise return velo_array unchanged.
-    """
-    # for creating gif
-    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
-    mask = jnp.logical_or(
-    step_number < 1000,
-    jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
-)	
+    # New mask (save every 50,000 steps only)
+    mask = step_number % 50000 == 0 
 
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
@@ -912,8 +902,25 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#time_step = 5.0E-08
 	#time_step = 5.0E-07
 	#time_step = 2.5E-08
-	time_step = 5.0E-07
-	#time_step = 3.5E-08
+	#time_step = 5.0E-07
+ 
+	#time_step = 2.5E-07 # dec from 5.0E-07 to see if can get loss!=0
+	#time_step = 1.0E-07 # dec from 1.0E-07 to see if can get loss!=0
+	#time_step = 2.0E-07 # inc from 1.0E-07 since crashed kernel
+	#time_step = 1.5E-07 # inc from 2.0E-07 to see if can get loss!=0
+	#time_step = 1.25E-07 # dec from 1.5E-07 to see if can get loss!=0
+	#time_step = 1.10E-07 # dec from 1.25E-07 to see if can get loss!=0
+	#time_step = 1.05E-07 # dec from 1.10E-07 to see if can get loss!=0
+	#time_step = 1.075E-07 # inc from 1.05E-07 since crashed kernel
+	#time_step = 1.08E-07 # inc from 1.075E-07 since crashed kernel
+	#time_step = 1.09E-07 # inc from 1.08E-07 since crashed kernel
+	#time_step = 1.095E-07 # inc from 1.09E-07 since crashed kernel, has zero loss before crashing kernel
+	#time_step = 1.25E-07 # will run for more steps to see what results we get
+
+	#time_step = 5.0E-06 ran, but in forward prob no damage
+ 
+	time_step = 7.5E-07 ran, but loss=0
+	#time_step = 6.0E-07 # dec to see if can get loss!=0
 
 	num_steps = max_time / time_step
 
@@ -1005,11 +1012,15 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
 
     EPS = 1.0e-12  # Minimum safe volume to avoid NaNs
 
-    time_step = 5.0E-07
     #time_step = 5.0E-07
     #time_step = 2.5E-08
     #time_step = 3.5E-08
     #time_step = 1.0E-09
+    #time_step = 5.0E-07
+    #time_step = 1.25E-07
+    time_step = 6.0E-07 
+
+
 
     num_steps = int(max_time / time_step)
 
@@ -1075,7 +1086,10 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     # Using mask to save forces at desired steps for plotting animation
     step_inds = jnp.arange(num_steps)
 
-    '''# to run optimization
+    # New mask (save every 50,000 steps only)
+    mask_all = step_inds % 50000 == 0 
+    '''
+    # to run optimization
     mask_all = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
         jnp.logical_and(step_inds <= 6000, step_inds % 2000 == 0),
@@ -1088,14 +1102,15 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
                 step_inds % 4000 == 0
             )
         )
-    ) '''
+    ) 
+    '''
     
-    
+    '''
     # to save when creating steps for gif 
     mask_all = jnp.logical_or(
     jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0),
     jnp.logical_and(jnp.logical_and(step_inds >= 1000, step_inds <= 1600), step_inds % 200 == 0)
-)	
+)	'''
 
     #jax.debug.print("disp vals returened: {d}", d=vals_returned[0])
     #jax.debug.print("vals returned [1] {v}", v=vals_returned[1])
@@ -1250,7 +1265,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.17       # Element length
+    delta_x = 0.15       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1326,13 +1341,13 @@ if __name__ == "__main__":
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 
-    #max_time = 1.0E-03
+    #max_time = 5.0E-03
     #max_time = 1.0
     max_time = 1.0E-02
 
     max_time = float(max_time)
 
-    time_step = 5.0E-07
+    time_step = 6.0E-07 
     num_steps = int(max_time / time_step)
 
     #forces_array = jnp.zeros(params.num_nodes)    
@@ -1346,7 +1361,7 @@ if __name__ == "__main__":
     #print("thickness: ", thickness0)
     #print("thickness shape: ", thickness0.shape)
     #print("num_elems: ", num_elems)
-    results = _solve(params, state, thickness0, filtered_density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     #jax.debug.print("allow_damage in main: {a}", a=allow_damage)
 
 
@@ -1375,7 +1390,6 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-####################################################
 ##################################################
 # # Now using Optax to maximize
 # scalar param
@@ -1430,7 +1444,7 @@ learning_rate = 0.1
 # use LR=0.1 for optimized struct w/ el length 0.25 in 2D
 #learning_rate = 0.1
 #num_steps = 70
-num_steps = 20
+num_steps = 2
 density_min = 0.0
 density_max = 1.0
 
@@ -1440,6 +1454,8 @@ upper = 20
 
 #max_time = 1.0E-02
 max_time = 5.0E-03
+#max_time = 5.0E-04
+#max_time = 1.0E-03
 
 
 # Optax optimizer
@@ -1538,20 +1554,20 @@ for step in range(num_steps):
     param = jnp.clip(param, 0.0, 1.0)
 
     # Now compute strain_energy and damage separately for plotting
-    output_vals = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
+    #output_vals = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
 
-    loss_to_plot.append(loss_val)
-    strain_energy_to_plot.append(output_vals.strain_energy)
+    #loss_to_plot.append(loss_val)
+    #strain_energy_to_plot.append(output_vals.strain_energy)
 
     # Compute final damage for plotting
-    final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
-    damage_to_plot.append(final_damage)
-
+    #final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
+    #damage_to_plot.append(final_damage)
+    '''
    # Check if all damage is below 0.5 and exit early if so
     if jnp.all(final_damage < 0.5):
         print(f"Early exit at step {step}: All damage values are below 0.5")
         break
-
+    '''
     #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
     #print("total damage in optimization loop: ", output_vals.damage.sum())
