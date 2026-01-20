@@ -762,8 +762,6 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
         )
     )
     '''
-	
-    
     ################################
     
     # for creating gif
@@ -772,6 +770,7 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     step_number < 1000,
     jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
 )	
+
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(disp_value)
@@ -787,6 +786,7 @@ def save_if_needed(forces_array, force_value, step_number):
     step_number < 1000,
     jnp.logical_and(jnp.logical_and(step_number >= 1000, step_number <= 1600), step_number % 200 == 0)
 )	
+
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(force_value)
@@ -1075,7 +1075,7 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     # Using mask to save forces at desired steps for plotting animation
     step_inds = jnp.arange(num_steps)
 
-    '''# to run optimization
+    '''
     mask_all = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
         jnp.logical_and(step_inds <= 6000, step_inds % 2000 == 0),
@@ -1088,14 +1088,15 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
                 step_inds % 4000 == 0
             )
         )
-    ) '''
-    
-    
-    # to save when creating steps for gif 
+    )
+	'''
+
+ 	# for creating gif
+    #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
     mask_all = jnp.logical_or(
-    jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0),
+    step_inds < 1000,
     jnp.logical_and(jnp.logical_and(step_inds >= 1000, step_inds <= 1600), step_inds % 200 == 0)
-)	
+)
 
     #jax.debug.print("disp vals returened: {d}", d=vals_returned[0])
     #jax.debug.print("vals returned [1] {v}", v=vals_returned[1])
@@ -1208,41 +1209,14 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     #jax.debug.print("density_field in loss: {f}", f=density_field)
     #loss_value = jnp.linalg.norm(final_damage, ord=1) + (np.linalg.norm(final_damage, ord=1) / (1 + density_field.sum()))  # Reduces density's direct impact
     #loss_value = jnp.linalg.norm(final_damage, ord=1)  * ( 1 + 1 /density_field.sum()) 
-    loss_value = jnp.linalg.norm(final_damage, ord=1)
+    #loss_value = jnp.linalg.norm(final_damage, ord=1)
     #loss_value = jnp.linalg.norm(final_damage, ord=2)
-
-    # --- Add Connectivity Penalty ---
-    # Define neighbors: Assuming a 2D grid, compute pairwise differences for adjacent nodes.
-    # (Adjust based on your grid: here, we assume a simple 2D mesh with neighbors in x/y directions.)
-    #num_nodes = params.num_nodes
-    #nx = params.number_of_elements  # e.g., 40
-    #ny = params.number_of_elements // 4  # e.g., 10
-    # Reshape density_field to grid for neighbor access (ny, nx)
-    #density_grid = density_field.reshape((ny, nx))
-
-    # Compute differences with right neighbor (x-direction)
-    #diff_x = jnp.abs(density_grid[:, 1:] - density_grid[:, :-1])  # Shape: (ny, nx-1)
-    # Compute differences with bottom neighbor (y-direction)
-    #diff_y = jnp.abs(density_grid[1:, :] - density_grid[:-1, :])  # Shape: (ny-1, nx)
-
-    # Sum all differences as the perimeter penalty
-    #perimeter_penalty = (jnp.sum(diff_x) + jnp.sum(diff_y)) * 0.1 # for scaling
-
-    #loss_value = 0.95 * jnp.linalg.norm(final_damage, ord=1) + 0.01 * (density_field.sum() / 400.0)
-
-    #damage_norm = jnp.linalg.norm(final_damage, ord=1)
-    #density_penalty = density_field.sum() / 400.0
-    #loss_value = 0.9 * damage_norm + 0.1 * (damage_norm / (1 + density_penalty))  # Reduces density's direct impact
-    #loss_value = 0.95 * damage_norm + 0.1 * (damage_norm / (0.01 * density_field.sum()))  # Reduces density's direct impact
-    #loss_value = damage_norm + (damage_norm / (0.01 * density_field.sum()))  # Reduces density's direct impact
-
-    #loss_value = 0.95 * jnp.linalg.norm(final_damage, ord=1) + 0.05 * (density_field.sum()/400.0)  # Added initial density for scaling
-    #loss_value = 0.9 * final_damage.sum() + 0.1 * perimeter_penalty
-    #jax.debug.print("L1 norm final_damage in loss: {f}", f=damage_norm )
-    #jax.debug.print("density penalty in loss: {d}", d=damage_norm / (0.01 * density_field.sum()))
-    #jax.debug.print("weighted L1 norm value in loss: {w}", w= 0.95 * damage_norm)
-    #jax.debug.print("weighted density sum value in loss: {w}", w=0.1 * (damage_norm / (0.01 * density_field.sum())))
-
+    
+    strain_energy = output_vals.strain_energy
+    strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
+    normalization_factor = 1.0E5
+    loss_value = strain_energy_norm / normalization_factor
+    
     return loss_value
 
 
@@ -1250,7 +1224,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.18       # Element length
+    delta_x = 0.25       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1425,9 +1399,6 @@ damage_to_plot = []
 strain_energy_to_plot = []
 
 learning_rate = 0.1
-
-# use LR=0.1 for optimized struct w/ el length 0.25 in 2D
-#learning_rate = 0.1
 #num_steps = 70
 num_steps = 20
 density_min = 0.0
@@ -1437,9 +1408,7 @@ density_max = 1.0
 lower = 1E-2
 upper = 20
 
-#max_time = 1.0E-02
-max_time = 5.0E-03
-
+max_time = 1.0E-02
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
@@ -1554,4 +1523,3 @@ for step in range(num_steps):
     #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
     #print("total damage in optimization loop: ", output_vals.damage.sum())
-    #print("damage in optimization loop: ", damage[-1])
