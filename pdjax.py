@@ -1,5 +1,6 @@
 from functools import partial
 import time
+import math
 
 import jax
 import jax.numpy as jnp
@@ -8,7 +9,6 @@ import numpy as np
 import scipy.spatial
 import scipy.optimize
 import matplotlib.pyplot as plt
-import matplotlib as mpl
 import matplotlib.animation as animation
 
 
@@ -44,6 +44,7 @@ class PDParams(NamedTuple):
 	bar_length: float
 	number_of_elements: int
 	bulk_modulus: float
+	elastic_modulus: float
 	density: float
 	thickness: jnp.ndarray
 	horizon: float
@@ -90,6 +91,7 @@ class PDState(NamedTuple):
 def init_problem(bar_length: float = 20.0,
 				 density: float = 1.0,
 				 bulk_modulus: float = 100.0,
+				 elastic_modulus: float = 300.0,
 				 number_of_elements: int = 20,
 				 horizon: Optional[float] = None,
 				 thickness: Union[float, np.ndarray] = 1.0,
@@ -196,7 +198,7 @@ def init_problem(bar_length: float = 20.0,
 
 	# package params
 	params = PDParams(
-		bar_length, number_of_elements, bulk_modulus, density, thickness_arr,
+		bar_length, number_of_elements, bulk_modulus, elastic_modulus, density, thickness_arr,
 		horizon, critical_stretch, prescribed_velocity, prescribed_force,
 		nodes, lengths, pd_nodes, num_nodes, neighborhood,
 		reference_position_state, reference_magnitude_state, num_neighbors, max_neighbors,
@@ -405,6 +407,24 @@ def safe_divide(num: jax.Array, denom: jax.Array, eps: float = 1e-12):
 	denom_safe = jax.vmap(row_fn, in_axes=0)(denom)
 
 	return num / denom_safe
+
+
+@jax.jit
+def compute_stable_time_step(families, ref_mag_state, volumes, num_nodes, 
+        bulk_modulus,rho,horizon):
+
+    spring_constant = 18.0 * bulk_modulus / math.pi / horizon**4.0
+
+    crit_time_step_denom = np.array([spring_constant * volumes[families[i]] / 
+            ref_mag_state[i] for i in range(num_nodes)])**0.5
+
+    critical_time_steps = np.sqrt(2.0 * rho) / crit_time_step_denom
+    
+    nodal_min_time_step = [ np.amin(item) for item in critical_time_steps ]
+
+    return np.amin(nodal_min_time_step)
+
+
 ###########################
 
 # Compute the force vector-state using a LPS peridynamic formulation
@@ -433,11 +453,9 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	def_pos = ref_pos + disp
 	#jax.debug.print("disp: {d}", d=disp)
 
+
 	#Compute deformation state
 	def_state = def_pos[neigh] - def_pos[:,None]
-	#jax.debug.print("def_state finite: {b}", b=jnp.all(jnp.isfinite(def_state)))
-	#jax.debug.print("def_state zeros? {z}", z=jnp.any(def_state == 0))
-
 	
 	# Compute deformation magnitude state
 	#def_mag_state = jnp.sqrt(def_state * def_state)
@@ -455,8 +473,9 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	def_unit_state = jnp.where(def_mag_state > eps,
 							def_state / def_mag_state, 0.0)
 	#def_unit_state = jax.vmap(safe_unit)(def_state, def_mag_state)
-
-
+	#jax.debug.print("def_mag_state min={m}, mean={mean}, max={M}",  m=jnp.min(def_mag_state), mean=jnp.mean(def_mag_state), M=jnp.max(def_mag_state))
+	#jax.debug.print("ref_mag_state min={m}, mean={mean}, max={M}",  m=jnp.min(ref_mag_state), mean=jnp.mean(ref_mag_state), M=jnp.max(ref_mag_state))
+ 
 	# Compute scalar extension state
 	exten_state = def_mag_state - ref_mag_state
  	#exten_state = def_mag_state[:, None] - ref_mag_state
@@ -468,7 +487,9 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
 	#jax.debug.print("stretch beofore my_stretch_where {s}", s=exten_state / ref_mag_state)
 	#stretch = my_stretch_where(ref_mag_state, exten_state)
-
+	#jax.debug.print("stretch after my_stretch_where {s}", s=stretch)
+	#jax.debug.print("stretch min={mn}, mean={mean}, max={mx}", mn=jnp.min(stretch), mean=jnp.mean(stretch), mx=jnp.max(stretch))
+	
     # Apply critical stretch fracture criteria to update inf state
 	def damage_branch(inf_state):
 		#inf_state_updated = jnp.where(stretch > critical_stretch, 0.0, inf_state)
@@ -515,7 +536,7 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	######### compute strain energy density here?  or calculation at least should look like this line here ########
 	#scalar_force_state = 9.0 * K / shape_tens[:, None] * exten_state
 	scalar_force_state = 9.0 * K * safe_divide(exten_state, shape_tens[:, None])
-
+	#jax.debug.print("scalar_force_state min={m} max={M}",  m=jnp.min(scalar_force_state), M=jnp.max(scalar_force_state))
 	# bond strain energy calc
 	#bond_strain_energy = 9.0 * K / shape_tens[:, None] * exten_state * exten_state * ref_mag_state
 	bond_strain_energy = 9.0 * K * safe_divide(exten_state**2 * ref_mag_state, shape_tens[:, None])
@@ -523,6 +544,8 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	# Compute the force state
 	force_state = inf_state * scalar_force_state * def_unit_state
 	#jax.debug.print("force_state finite: {b}", b=force_state)
+
+	#jax.debug.print("force_state: {f}", f=force_state)
 
 	###  return bond_strain_energy
 	return force_state, inf_state_updated, bond_strain_energy
@@ -753,11 +776,19 @@ def solve_one_step(params, vals, allow_damage:bool):
 	right_bc_region = params.right_bc_region
 	pd_nodes = params.pd_nodes
 	rho = params.density
+	E = params.elastic_modulus 
+	horizon = params.horizon
+	families = params.neighborhood
+	ref_mag_state = params.reference_magnitude_state
+
 
 
 	# TODO: Solve for stable time step
+ 	#time_step = compute_stable_time_step(families, ref_mag_state, volumes, num_nodes, bulk_modulus, rho, horizon)
+	#jax.debug.print("Computed stable time step: {t}", t=time_step)
 	time_step = 5.0E-08
-    #time_step = 1E-07
+	#time_step = 4.0E-08
+	#time_step = 3.25E-08
 
 	num_steps = max_time / time_step
 
@@ -831,7 +862,8 @@ def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_dam
     EPS = 1.0e-12  # Minimum safe volume to avoid NaNs
 
     time_step = 5.0E-08
-    #time_step = 1.0e-07
+    #time_step = 4.0E-08
+    #time_step = 3.25E-08
 
     num_steps = int(max_time / time_step)
 
@@ -1009,8 +1041,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	strain_energy = output_vals[11]
  
 	# Extract damage from output_vals
-	#damage = output_vals[7][-1]
-	damage = output_vals[7]
+	damage = output_vals[7][-1]
 
 	# Calc strain energy density
 	#total_volume = jnp.sum(vol_state)
@@ -1018,7 +1049,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	# calc L1 norm strain energy density
 	#strain_energy_L1_norm = jnp.linalg.norm(strain_energy, ord=1, axis=0)
-	#strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
+	strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
 
 	normalization_factor = 1E12
 	
@@ -1039,17 +1070,16 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	#Calling compute damage 
 	#jax.debug.print("inf state: {i}", i=output_vals[5])
-	#loss_value = damage.sum()
+	#loss_value = jnp.linalg.norm(damage, ord=1)
+	loss_value = damage.sum()
+	#loss_value = jnp.linalg.norm(damage, ord=2) * 10.0
 	#loss_value = damage.mean() * 1.0E3
-
+ 
     # Weights for balancing mean and max (adjust w_mean and w_max based on your priorities)
 	#w_sum = 0.5 # Weight for mean damage (e.g., 70% focus on overall average)
 	#w_max = 0.5  # Weight for max damage (e.g., 30% focus on peaks)
 
-	#loss_value = damage.sum()  #
-	#loss_value = jnp.linalg.norm(damage, ord=1)
-	loss_value = jnp.linalg.norm(damage, ord=2)
-  	#loss_value = jnp.linalg.norm(damage, ord=1)
+	#sum_damage = damage.sum()  #
 	#max_damage = jnp.max(damage)    # Maximum damage value across all nodes and saved time steps
 
 	#loss_value = w_sum * sum_damage + (w_max * max_damage * 10.0)
@@ -1075,17 +1105,16 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	# Weighted combination, multi-objective
 	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor)
 
-	#jax.debug.print("damage vector: {d}", d=damage[-1])
-	#jax.debug.print("L2 loss: {l}", l=jnp.linalg.norm(damage[-1], ord=2))
-
 	return loss_value, (strain_energy, damage)
+
 
 
 ### Main Program ####
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.25       # Element length
+    #delta_x = 0.20  
+    delta_x = 0.20 # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1152,19 +1181,23 @@ if __name__ == "__main__":
         bar_length=fixed_length,
         density=density,
         bulk_modulus=bulk_modulus,
+        elastic_modulus=elastic_modulus,
         number_of_elements=int(fixed_length / delta_x),
         horizon=fixed_horizon,
         thickness=thickness,
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
-    max_time = 1.0E-01
+    #max_time = 1.0E-01
     #max_time = 1.0
-    #max_time = 5.0E-03
+    max_time = 1.0E-01
     
     max_time = float(max_time)
     
+    
     time_step = 5.0E-08
+    #time_step = 3.25E-08
+    
     num_steps = int(max_time / time_step)
     
     forces_array = jnp.full((num_steps,), 0.0)
@@ -1180,8 +1213,8 @@ if __name__ == "__main__":
     
     print("thickness inputted: ", thickness0)
     
-    #print("damage: ", results[7])
-    
+    print("damage: ", results[7][-1])
+
     #print("displacement values: ", results[0])
     disp = results[0]
     fig, ax = plt.subplots()
@@ -1189,15 +1222,13 @@ if __name__ == "__main__":
     ax.set_xlabel("Node Position")
     ax.set_ylabel("Displacement")
     ax.set_title("Displacement vs Node Position (Forward Problem)")
-    ax.set_ylim(-1.0, 1.0)
+    #ax.set_ylim(-2.5,2.5)
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness0)
-    
-    ##################################################
 
 
-    ##################################################
+##################################################
 # # Now using Optax to maximize
 # random array of thickness values for initial thickness 
 #key = jax.random.PRNGKey(0) 
@@ -1238,18 +1269,17 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 1.0
-num_steps = 4
+num_steps = 20
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
-## Define gradient bounds
+# Define gradient bounds
 lower = 1E-2
 upper = 20
 
 #max_time = 1.0E-02
 max_time = 5.0E-03
 #max_time = 1.0E-03
-#max_time = 1.0E-01
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
@@ -1326,14 +1356,6 @@ for step in range(num_steps):
 	strain_energy_to_plot.append(strain_energy)
 	damage_to_plot.append(damage)
 
-	jax.debug.print("Step {s}, loss={l}, thickness={t}, gradients={g}", 
-					s=step, l=loss_val, t=full_thickness, g=grads)
-	print("damage in optimization loop: ", damage[-1])
-
-	damage_threshold = 0.5
- 
-      # Early stopping condition: Check if ALL node damages are below the threshold
-	if jnp.all(damage < damage_threshold):
-		print(f"Early stopping at step {step}: All damages are below {damage_threshold}.")
-		jax.debug.print("Early stopping: All damages below threshold.")
-		break  # Exit the loop
+	jax.debug.print("Step {s}, loss={l}, thickness={t}",
+					s=step, l=loss_val, t=full_thickness)
+	print("damage in optimization loop: ", damage)
