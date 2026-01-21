@@ -1113,7 +1113,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.13       # Element length
+    delta_x = 0.11       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1357,4 +1357,3 @@ for step in range(num_steps):
 	jax.debug.print("Step {s}, loss={l}, thickness={t}",
 					s=step, l=loss_val, t=full_thickness)
 	print("damage in optimization loop: ", damage[-1])
- 
