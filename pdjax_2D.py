@@ -1194,14 +1194,18 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
 def loss(params, state, thickness_vector, density_field, forces_array, allow_damage, max_time,
-         alpha=0.0):
+         damage_norm_0=1.0, vf_0=1.0, alpha=0.5):
     output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field,
                          forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
 
     final_damage = output_vals[11][-1]
     damage_norm = jnp.linalg.norm(final_damage, ord=1)
 
-    loss_value = damage_norm + alpha * density_field.sum()
+    # Both terms start at 1.0 and scale relative to baseline
+    damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
+    weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
+
+    loss_value = (1 - alpha) * damage_term + alpha * weight_term
     return loss_value
 
 
@@ -1391,7 +1395,7 @@ learning_rate = 0.1
 # use LR=0.1 for optimized struct w/ el length 0.25 in 2D
 #learning_rate = 0.1
 #num_steps = 70
-num_steps = 5
+num_steps = 10
 density_min = 0.0
 density_max = 1.0
 
@@ -1472,27 +1476,11 @@ init_full_density = init_full_density.at[no_damage_region_right].set(right_fixed
 
 baseline_output = _solve(params, state, thickness, init_full_density,
                          forces_array, allow_damage, max_time)
-
-# Compute baseline damage gradient magnitude to auto-set alpha
-def damage_only_loss(density_field):
-    out = _solve(params, state, thickness, density_field, forces_array, allow_damage, max_time)
-    return jnp.linalg.norm(out[11][-1], ord=1)
-
-damage_grad_baseline = jax.grad(damage_only_loss)(init_full_density)
-damage_grad_magnitude = jnp.abs(damage_grad_baseline[optimizable_indices]).mean()
-
-# weight term gradient per node = alpha * 1.0
-# damage term gradient per node ≈ damage_grad_magnitude
-# alpha = weight_importance * damage_grad_magnitude makes weight term
-# exactly weight_importance fraction of damage signal
-weight_importance = 0.01  # tune: 0.01=1%, 0.1=10% weight influence
-alpha = weight_importance * float(damage_grad_magnitude)
-print(f"damage_grad_magnitude={damage_grad_magnitude:.6f}, auto alpha={alpha:.6f}")
-
-
 baseline_damage = baseline_output[11][-1]
 damage_norm_0 = jnp.linalg.norm(baseline_damage, ord=1)
-vf_0 = init_full_density.sum() / init_full_density.size
+vf_0 = init_full_density.sum()  # use raw sum, not fraction
+print(f"damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
+
 
 print(f"Baseline damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
 
@@ -1522,7 +1510,8 @@ for step in range(num_steps):
     loss_val, grads_full = loss_and_grad(
         params, state, thickness, full_density_field,
         forces_array, allow_damage, max_time,
-        alpha) 
+        damage_norm_0, vf_0, alpha)
+
 
     # Extract grads only for the optimizable top half
     grads = grads_full[optimizable_indices]
