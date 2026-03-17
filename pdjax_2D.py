@@ -534,6 +534,7 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	undamaged_influence_state_left = params.undamaged_influence_state_left
 	undamaged_influence_state_right = params.undamaged_influence_state_right
 	horizon = params.horizon
+	delta_x  = params.dx
 
     # Split disp and ref_pos into x/y components (new, to enable PD.py-style syntax)
 	pos_x = ref_pos[:, 0]  # Shape: (num_nodes,)
@@ -655,7 +656,8 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	E = 200E9
 	nu = 0.34
-	c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	c_bond = 12 * K / (jnp.pi * delta_x * horizon**3 )  # Using bulk modulus K instead of E for LPS, no Poisson's ratio correction
+	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 
 	'''
