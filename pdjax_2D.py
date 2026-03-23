@@ -534,7 +534,7 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	undamaged_influence_state_left = params.undamaged_influence_state_left
 	undamaged_influence_state_right = params.undamaged_influence_state_right
 	horizon = params.horizon
-	delta_x  = params.dx
+	thickness = params.thickness[0]
 
     # Split disp and ref_pos into x/y components (new, to enable PD.py-style syntax)
 	pos_x = ref_pos[:, 0]  # Shape: (num_nodes,)
@@ -655,11 +655,13 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	E = 200E9
-	nu = 0.34
-	c_bond = 12 * K / (jnp.pi * delta_x * horizon**3 )  # Using bulk modulus K instead of E for LPS, no Poisson's ratio correction
-	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
-	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	nu = 0.25
 
+	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	#c_bond = 12 * K / (jnp.pi * thickness * horizon**3 )  # Using bulk modulus K instead of E for LPS, no Poisson's ratio correction
+ 	#c_bond = 12 * K / (jnp.pi * 1 * horizon**3 ) # set thickness = 1 to see if it changes
+	c_bond = 12 * E / (2 * (1 - nu) * jnp.pi * thickness * horizon**3) # rewrote using E instead of K
 	'''
 	if ref_mag_state < horizon - jnp.max(pos_x,pos_y)/2.0:
 		gamma = 1.0
@@ -1207,7 +1209,10 @@ def loss(params, state, thickness_vector, density_field, forces_array, allow_dam
     damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
     weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
 
-    loss_value = (1 - alpha) * damage_term + alpha * weight_term
+    #loss_value = (1 - alpha) * damage_term + alpha * weight_term
+    
+    loss_value = damage_norm
+    
     return loss_value
 
 
@@ -1232,7 +1237,7 @@ if __name__ == "__main__":
     density = 7930.0
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
-    poisson_ratio = 0.34
+    poisson_ratio = 0.33  #note nu will always be 0.25 in this code since using bond based PD
     prescribed_force = 3.0E10
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
@@ -1339,8 +1344,8 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
-    
-    ##################################################
+
+##################################################
 # # Now using Optax to maximize
 # scalar param
 #param = jnp.array([1.0])
@@ -1397,7 +1402,7 @@ learning_rate = 0.1
 # use LR=0.1 for optimized struct w/ el length 0.25 in 2D
 #learning_rate = 0.1
 #num_steps = 70
-num_steps = 10
+num_steps = 20
 density_min = 0.0
 density_max = 1.0
 
@@ -1540,7 +1545,10 @@ for step in range(num_steps):
         print(f"Early exit at step {step}: All damage values are below 0.5")
         break
     
+    
     #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
     #print("total damage in optimization loop: ", output_vals.damage.sum())
     #print("damage in optimization loop: ", damage[-1])
+    
+    
