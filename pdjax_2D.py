@@ -657,7 +657,7 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	nu = 0.34
 	c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
-	#c_bond = 12 * E / (2 * (1 - nu) * jnp.pi * thickness * horizon**3) # rewrote using E instead of K
+	c_bond = 12 * E / (2 * (1 - nu) * jnp.pi * thickness * horizon**3) # rewrote using E instead of K
 
 	'''
 	if ref_mag_state < horizon - jnp.max(pos_x,pos_y)/2.0:
@@ -1194,27 +1194,29 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	#jax.debug.print("vol_state in comp damage: {i}", i=vol_state)
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
-def loss(params, state, thickness_vector, density_field, forces_array, allow_damage, max_time,
-         damage_norm_0, vf_0, alpha=0.05, min_vf=0.15, penalty_weight=10.0):
+def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float, damage_norm_0=1.0, vf_0=1.0, alpha=0.05):
+    output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
+    checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
 
-    output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field,
-                         forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
-    
     final_damage = output_vals[11][-1]
-    damage_norm = jnp.linalg.norm(final_damage, ord=1)
-
-    damage_term = damage_norm / damage_norm_0       # normalized, starts at 1.0
-    weight_term = density_field.sum() / vf_0        # normalized, starts at 1.0
-
-    # Soft floor: quadratic penalty that grows as vf drops below min_vf
-    volume_fraction = density_field.sum() / density_field.size
-    floor_penalty = penalty_weight * jnp.maximum(0.0, min_vf - volume_fraction) ** 2
     
-    jax.debug.print("damage_term: {x}", x=damage_term)
-    jax.debug.print("weight_term: {x}", x=weight_term)
+    damage_norm = jnp.linalg.norm(final_damage, ord=1)
+    #loss_value = jnp.linalg.norm(final_damage, ord=2)
+    
+    # Both terms start at 1.0 and scale relative to baseline
+    damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
+    #weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
+    
+    # Current — always pushes toward less material:
+    #weight_term = density_field.sum() / vf_0  # gradient always positive (remove material to reduce)
 
-    #loss_value = (1 - alpha) * damage_term + alpha * weight_term 
-    loss_value = damage_norm
+	# Fix — penalizes deviation in either direction:
+    vf_target = vf_0 / density_field.size      # target volume fraction (e.g. 0.5)
+    volume_fraction = density_field.sum() / density_field.size
+    weight_term = (volume_fraction - vf_target) ** 2
+
+    loss_value = (1 - alpha) * damage_term + alpha * weight_term
+    #loss_value = damage_norm
     
     return loss_value
 
@@ -1313,13 +1315,13 @@ if __name__ == "__main__":
 
     ### make sure density field is correct shape ###
     density_field = jnp.full((params.num_nodes,), density_field)  # Convert scalar to array if needed
-
+    
     # Solve the problem with initial thickness
     thickness0 = ensure_thickness_vector(thickness0, params.num_nodes)
     #print("thickness: ", thickness0)
     #print("thickness shape: ", thickness0.shape)
     #print("num_elems: ", num_elems)
-    results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, filtered_density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     #jax.debug.print("allow_damage in main: {a}", a=allow_damage)
 
 
@@ -1349,16 +1351,16 @@ if __name__ == "__main__":
     plt.show()
     
     
-        ##################################################
+    ##################################################
 # # Now using Optax to maximize
 # scalar param
 #param = jnp.array([1.0])
 density_field = 0.25
 thickness = jnp.full((params.num_nodes,), thickness0)
-param = jnp.full((params.num_nodes,), density_field)
+#param = jnp.full((params.num_nodes,), density_field)
 #init_density = param.copy()
 
-#param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(params.num_nodes,))
+param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(params.num_nodes,))
 init_density = param.copy()
 
 # setting density values in no_damage_regions
@@ -1395,17 +1397,22 @@ top_half_middle = top_half_middle[jnp.argsort(params.pd_nodes[top_half_middle, 0
 optimizable_indices = top_half_middle
 
 # Initialize param with the correct size (length of top_half_middle)
-param = jnp.ones((len(top_half_middle),)) * density_field
+#param = jnp.ones((len(top_half_middle),)) * density_field
+param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(len(top_half_middle),))
 
 loss_to_plot = []
 damage_to_plot = []
 strain_energy_to_plot = []
 
+# to get results ran w/ LR=0.1
 learning_rate = 1.0
-# use LR=1.0 for optimized struct w/ el length 0.25 in 2D
+#learning_rate = 0.01
+
+# use LR=0.1 for optimized struct w/ el length 0.25 in 2D
 #learning_rate = 0.1
-#num_steps = 70
-num_steps = 5
+num_steps = 20
+# ran for  steps to get optimized L1 norm distribution
+
 density_min = 0.0
 density_max = 1.0
 
@@ -1416,6 +1423,7 @@ upper = 20
 #max_time = 1.0E-02
 max_time = 5.0E-03
 
+#max_time = 1.0E-02
 
 # Optax optimizer
 optimizer = optax.adam(learning_rate)
@@ -1424,13 +1432,15 @@ opt_state = optimizer.init(param)
 # Optimization loop
 damage_threshold = 0.5
 
+# Loss function (already defined as 'loss')
+loss_and_grad = jax.value_and_grad(loss, argnums=3)
 
 # Clamp function
 def clamp_params(grads):
     lower = 1E-05
     upper = 1.0E10
     #jax.debug.print("entering clamp_params: {t}", t=grads)
-    grads = jax.tree_util.tree_map(lambda x: jnp.clip(abs(x), lower, upper), grads)
+    grads = jax.tree_util.tree_map(lambda x: jnp.clip(jnp.abs(x), lower, upper), grads)
     #jax.debug.print("grad after clamping: {t}", t=grads)
     return grads
 
@@ -1479,6 +1489,7 @@ def make_symmetric_density(top_params, left_fixed_density, right_fixed_density):
 
     return full_density_field
 
+
 # Loss function (already defined as 'loss')
 init_full_density = make_symmetric_density(param, left_fixed_density, right_fixed_density)
 init_full_density = init_full_density.at[no_damage_region_left].set(left_fixed_density)
@@ -1486,19 +1497,22 @@ init_full_density = init_full_density.at[no_damage_region_right].set(right_fixed
 
 baseline_output = _solve(params, state, thickness, init_full_density,
                          forces_array, allow_damage, max_time)
+
 baseline_damage = baseline_output[11][-1]
-#damage_norm_0 = jnp.linalg.norm(baseline_damage, ord=1)
-damage_norm_0 = damage_norm_0.sum()  # use raw sum, not fraction
+damage_norm_0 = jnp.linalg.norm(baseline_damage, ord=1)
+
 vf_0 = init_full_density.sum()  # use raw sum, not fraction
 print(f"damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
 
 
 print(f"Baseline damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
 
-#alpha = 0.3  # tune: 0 = pure damage, 1 = pure weight
+alpha = 0.05  # tune: 0 = pure damage, 1 = pure weight
 
 # Loss and grad — argnums=3 differentiates w.r.t. density_field
 loss_and_grad = jax.value_and_grad(loss, argnums=3)
+
+
 
 # Optimization loop
 for step in range(num_steps):
@@ -1519,9 +1533,8 @@ for step in range(num_steps):
 
     # Compute loss and gradients (grads wrt full_density_field)
     loss_val, grads_full = loss_and_grad(
-        params, state, thickness, full_density_field,
-        forces_array, allow_damage, max_time, damage_norm_0, vf_0)
-
+        params, state, thickness, full_density_field, 
+        forces_array, allow_damage, max_time, damage_norm_0, vf_0, alpha)
 
     # Extract grads only for the optimizable top half
     grads = grads_full[optimizable_indices]
@@ -1542,13 +1555,13 @@ for step in range(num_steps):
     final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
     damage_to_plot.append(final_damage)
 
-    '''
+    
    # Check if all damage is below 0.5 and exit early if so
     if jnp.all(final_damage < 0.5):
         print(f"Early exit at step {step}: All damage values are below 0.5")
         break
-    '''
+    
+
     #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
-    #print("total damage in optimization loop: ", output_vals.damage.sum())
-    #print("damage in optimization loop: ", damage[-1])
+    
