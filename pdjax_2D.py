@@ -200,8 +200,8 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the three leftmost x-values
-	leftmost_x = sorted_x[:3]
+	# Select the six leftmost x-values
+	leftmost_x = sorted_x[:7]
 
 	tol = 1e-8
 
@@ -215,8 +215,8 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the three rightmost x-values
-	rightmost_x = sorted_x[-3:]
+	# Select the five rightmost x-values
+	rightmost_x = sorted_x[-7:]
 
 	# Create mask for nodes with x in the rightmost three rows
 	right_edge_mask = (pd_nodes[:, 0] >= sorted_x[-3] - tol)
@@ -234,17 +234,17 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the five leftmost x-values
-	leftmost_x = sorted_x[:5]
+	# Select the seven leftmost x-values
+	leftmost_x = sorted_x[:7]
 
 
-	# Create mask for nodes with x in the leftmost five rows
+	# Create mask for nodes with x in the leftmost seven rows
 	no_damage_left_mask = jnp.isin(pd_nodes[:, 0], leftmost_x)
 	no_damage_region_left = jnp.where(no_damage_left_mask)[0]  # Indices of selected nodes
 
-	# Select the three rightmost x-values
-	rightmost_x = sorted_x[-5:]
-	# Create mask for nodes with x in the rightmost three rows
+	# Select the seven rightmost x-values
+	rightmost_x = sorted_x[-7:]
+	# Create mask for nodes with x in the rightmost seven rows
 	no_damage_right_mask = jnp.isin(pd_nodes[:, 0], rightmost_x)
 	no_damage_region_right = jnp.where(no_damage_right_mask)[0]  # Indices of selected nodes
 
@@ -655,7 +655,7 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	E = 200E9
 	nu = 0.34
-	c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 	c_bond = 12 * E / (2 * (1 - nu) * jnp.pi * thickness * horizon**3) # rewrote using E instead of K
 
@@ -1215,8 +1215,8 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     volume_fraction = density_field.sum() / density_field.size
     weight_term = (volume_fraction - vf_target) ** 2
 
-    loss_value = (1 - alpha) * damage_term + alpha * weight_term
-    #loss_value = damage_norm
+    #loss_value = (1 - alpha) * damage_term + alpha * weight_term
+    loss_value = damage_norm
     
     return loss_value
 
@@ -1243,7 +1243,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 3.0E10
+    prescribed_force = 1.5E10
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
@@ -1364,8 +1364,8 @@ param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(params.nu
 init_density = param.copy()
 
 # setting density values in no_damage_regions
-left_fixed_density = 0.50
-right_fixed_density = 0.50
+left_fixed_density = 0.5
+right_fixed_density = 0.5
 
 # optimizing only half of bar, such that thickness is symmetric
 num_nodes = params.num_nodes
@@ -1405,12 +1405,13 @@ damage_to_plot = []
 strain_energy_to_plot = []
 
 # to get results ran w/ LR=0.1
-learning_rate = 1.0
-#learning_rate = 0.01
-
-# use LR=0.1 for optimized struct w/ el length 0.25 in 2D
 #learning_rate = 0.1
-num_steps = 20
+#learning_rate = 0.01
+# uses a learning rate schedule of 0.1 for the first 40 steps, then 0.01 for the remaining steps
+def lr_schedule(step):
+    return jnp.where(step < 10, 0.1, 0.01)
+
+num_steps = 11
 # ran for  steps to get optimized L1 norm distribution
 
 density_min = 0.0
@@ -1426,7 +1427,11 @@ max_time = 5.0E-03
 #max_time = 1.0E-02
 
 # Optax optimizer
-optimizer = optax.adam(learning_rate)
+#optimizer = optax.adam(learning_rate)
+#optimizer = optax.adam(learning_rate = lr_schedule)
+#opt_state = optimizer.init(param)
+
+optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=lr_schedule)
 opt_state = optimizer.init(param)
 
 # Optimization loop
@@ -1564,4 +1569,3 @@ for step in range(num_steps):
 
     #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
-    
