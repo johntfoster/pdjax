@@ -661,9 +661,10 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	E = 200E9
 	nu = 0.34
-	c_bond = 12 * K / (jnp.pi * thickness * horizon**3 ) # Using bulk modulus K instead of E for LPS, no Poisson's ratio correction
+	#c_bond = 12 * K / (jnp.pi * thickness * horizon**3 ) # Using bulk modulus K instead of E for LPS, no Poisson's ratio correction
 	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
+	c_bond = 12 * E / (2 * (1 - nu) * jnp.pi * thickness * horizon**3) # rewrote using E instead of K
 
 	'''
 	if ref_mag_state < horizon - jnp.max(pos_x,pos_y)/2.0:
@@ -1254,13 +1255,16 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	#jax.debug.print("vol_state in comp damage: {i}", i=vol_state)
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
-def loss(params, state, thickness_vector, density_field, forces_array, allow_damage, max_time,
-         strain_energy_max=1.0, weight_max=1.0, alpha=0.5):
-    output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field,
-                         forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
+def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float, strain_energy_max, weight_max, vf_0=1.0, alpha=0.1):
+    output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
 
     strain_term = jnp.mean(output_vals.strain_energy) / strain_energy_max  # 0=stiffest, 1=least stiff
-    weight_term = density_field.sum() / weight_max                          # 0=no material, 1=full material
+    #weight_term = density_field.sum() / weight_max                          # 0=no material, 1=full material
+    
+    
+    vf_target = 120 / density_field.size      # target volume fraction (e.g. 0.5)
+    volume_fraction = density_field.sum() / density_field.size
+    weight_term = (volume_fraction - vf_target) ** 2
 
     loss_value = (1 - alpha) * strain_term + alpha * weight_term
     return loss_value
@@ -1289,8 +1293,9 @@ if __name__ == "__main__":
     density = 7930.0
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
-    poisson_ratio = 0.25  #note nu will always be 0.25 in this code since using bond based PDa
-    prescribed_force = 3.0E10
+    poisson_ratio = 0.33  #note nu will always be 0.33 in this code since using bond based PDa
+    #prescribed_force = 3.0E10
+    prescribed_force = 1.5E10
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
@@ -1395,8 +1400,9 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
-    
-    ##################################################
+
+
+   ##################################################
 # # Now using Optax to maximize
 # scalar param
 #param = jnp.array([1.0])
@@ -1445,7 +1451,7 @@ loss_to_plot = []
 damage_to_plot = []
 strain_energy_to_plot = []
 
-learning_rate = 0.1
+learning_rate = 0.01
 #num_steps = 70
 num_steps = 10
 density_min = 0.0
@@ -1543,7 +1549,7 @@ print(f"strain_energy_max={strain_energy_max:.4f}, weight_max={weight_max:.1f}")
 #strain_energy_0 = float(jnp.sum(baseline_output.strain_energy)) / normalization_factor  # update baseline too
 
 vf_0 = float(init_full_density.sum())
-print(f"strain_energy_0={strain_energy_0:.4f}, vf_0={vf_0:.4f}")
+#print(f"strain_energy_0={strain_energy_0:.4f}, vf_0={vf_0:.4f}")
 
 
 
@@ -1568,7 +1574,7 @@ for step in range(num_steps):
     loss_val, grads_full = loss_and_grad(
         params, state, thickness, full_density_field,
         forces_array, allow_damage, max_time,
-        strain_energy_max, weight_max)
+        strain_energy_max, weight_max, vf_0, alpha=0.1)
 
     # Extract grads only for the optimizable top half
     grads = grads_full[optimizable_indices]
@@ -1596,4 +1602,4 @@ for step in range(num_steps):
 
     #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
-    #print("total damage in optimization loop: ", output_vals.damage.sum())
+    #print("total damage in optimization loop: ", output_vals.damage.sum())s
