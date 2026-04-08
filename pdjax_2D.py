@@ -201,7 +201,7 @@ def init_problem(bar_length: float = 20.0,
 	sorted_x = jnp.sort(unique_x)
 
 	# Select the six leftmost x-values
-	leftmost_x = sorted_x[:7]
+	leftmost_x = sorted_x[:5]
 
 	tol = 1e-8
 
@@ -216,7 +216,7 @@ def init_problem(bar_length: float = 20.0,
 	sorted_x = jnp.sort(unique_x)
 
 	# Select the five rightmost x-values
-	rightmost_x = sorted_x[-7:]
+	rightmost_x = sorted_x[-5:]
 
 	# Create mask for nodes with x in the rightmost three rows
 	right_edge_mask = (pd_nodes[:, 0] >= sorted_x[-3] - tol)
@@ -235,7 +235,7 @@ def init_problem(bar_length: float = 20.0,
 	sorted_x = jnp.sort(unique_x)
 
 	# Select the seven leftmost x-values
-	leftmost_x = sorted_x[:7]
+	leftmost_x = sorted_x[:5]
 
 
 	# Create mask for nodes with x in the leftmost seven rows
@@ -243,7 +243,7 @@ def init_problem(bar_length: float = 20.0,
 	no_damage_region_left = jnp.where(no_damage_left_mask)[0]  # Indices of selected nodes
 
 	# Select the seven rightmost x-values
-	rightmost_x = sorted_x[-7:]
+	rightmost_x = sorted_x[-5:]
 	# Create mask for nodes with x in the rightmost seven rows
 	no_damage_right_mask = jnp.isin(pd_nodes[:, 0], rightmost_x)
 	no_damage_region_right = jnp.where(no_damage_right_mask)[0]  # Indices of selected nodes
@@ -1194,7 +1194,7 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	#jax.debug.print("vol_state in comp damage: {i}", i=vol_state)
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
-def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float, damage_norm_0=1.0, vf_0=1.0, alpha=0.05):
+def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float, damage_norm_0=1.0, vf_0=1.0, alpha=0.1):
     output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
     checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
 
@@ -1211,12 +1211,13 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     #weight_term = density_field.sum() / vf_0  # gradient always positive (remove material to reduce)
 
 	# Fix — penalizes deviation in either direction:
-    vf_target = vf_0 / density_field.size      # target volume fraction (e.g. 0.5)
+    #vf_target = vf_0 / density_field.size      # target volume fraction (e.g. 0.5)
+    vf_target = 120 / density_field.size      # target volume fraction (e.g. 0.5)
     volume_fraction = density_field.sum() / density_field.size
     weight_term = (volume_fraction - vf_target) ** 2
 
-    #loss_value = (1 - alpha) * damage_term + alpha * weight_term
-    loss_value = damage_norm
+    loss_value = (1 - alpha) * damage_term + alpha * weight_term
+    #loss_value = damage_norm
     
     return loss_value
 
@@ -1225,7 +1226,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.25       # Element length
+    delta_x = 0.22       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1350,7 +1351,6 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
     
-    
     ##################################################
 # # Now using Optax to maximize
 # scalar param
@@ -1408,10 +1408,15 @@ strain_energy_to_plot = []
 #learning_rate = 0.1
 #learning_rate = 0.01
 # uses a learning rate schedule of 0.1 for the first 40 steps, then 0.01 for the remaining steps
-def lr_schedule(step):
-    return jnp.where(step < 10, 0.1, 0.01)
+#def lr_schedule(step):
+#    return jnp.where(step < 10, 0.1, 0.01)
 
-num_steps = 11
+def lr_schedule(step):
+    return jnp.where(step < 10, 0.002,
+           jnp.where(step < 40, 0.0002, 0.00002))
+
+
+num_steps = 70
 # ran for  steps to get optimized L1 norm distribution
 
 density_min = 0.0
@@ -1512,7 +1517,7 @@ print(f"damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
 
 print(f"Baseline damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
 
-alpha = 0.05  # tune: 0 = pure damage, 1 = pure weight
+alpha = 0.1  # tune: 0 = pure damage, 1 = pure weight
 
 # Loss and grad — argnums=3 differentiates w.r.t. density_field
 loss_and_grad = jax.value_and_grad(loss, argnums=3)
