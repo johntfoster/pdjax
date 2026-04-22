@@ -1216,8 +1216,8 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     volume_fraction = density_field.sum() / density_field.size
     weight_term = (volume_fraction - vf_target) ** 2
 
-    loss_value = (1 - alpha) * damage_term + alpha * weight_term
-    #loss_value = damage_norm
+    #loss_value = (1 - alpha) * damage_term + alpha * weight_term
+    loss_value = damage_norm
     
     return loss_value
 
@@ -1226,7 +1226,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.22       # Element length
+    delta_x = 0.25       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1322,7 +1322,7 @@ if __name__ == "__main__":
     #print("thickness: ", thickness0)
     #print("thickness shape: ", thickness0.shape)
     #print("num_elems: ", num_elems)
-    results = _solve(params, state, thickness0, filtered_density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     #jax.debug.print("allow_damage in main: {a}", a=allow_damage)
 
 
@@ -1406,18 +1406,21 @@ strain_energy_to_plot = []
 
 # to get results ran w/ LR=0.1
 #learning_rate = 0.1
-#learning_rate = 0.01
+learning_rate = 0.01
 # uses a learning rate schedule of 0.1 for the first 40 steps, then 0.01 for the remaining steps
 #def lr_schedule(step):
-#    return jnp.where(step < 10, 0.1, 0.01)
+    #return jnp.where(step < 5, 0.1, 0.01)
 
+# use LR schedule when have weight in loss fn
+'''
 def lr_schedule(step):
-    return jnp.where(step < 10, 0.002,
-           jnp.where(step < 40, 0.0002, 0.00002))
+    return jnp.where(step < 10, 0.01,
+           jnp.where(step < 40, 0.001, 0.0001))
+'''
 
-
-num_steps = 70
-# ran for  steps to get optimized L1 norm distribution
+#num_steps = 50
+num_steps = 40
+# ran for 20 steps to get optimized L1 norm distribution
 
 density_min = 0.0
 density_max = 1.0
@@ -1436,7 +1439,7 @@ max_time = 5.0E-03
 #optimizer = optax.adam(learning_rate = lr_schedule)
 #opt_state = optimizer.init(param)
 
-optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=lr_schedule)
+optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=learning_rate)
 opt_state = optimizer.init(param)
 
 # Optimization loop
