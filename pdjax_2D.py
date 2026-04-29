@@ -748,10 +748,9 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     If step_number is one we want to save, write disp_value at that index,
     otherwise return disp_array unchanged.
     """
-    # for plotting damage gif
+    
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        #jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
         jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
@@ -765,10 +764,10 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     )
     
 	
-    
-    ################################
     '''
-    # for creating velocity gif
+    ################################
+    
+    # for creating gif
     #mask = jnp.logical_and(step_number <= 700, step_number % 50 == 0
     mask = jnp.logical_or(
     step_number < 1000,
@@ -785,7 +784,6 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
 def save_if_needed(forces_array, force_value, step_number):
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        #jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
         jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
@@ -797,8 +795,6 @@ def save_if_needed(forces_array, force_value, step_number):
             )
         )
     )
-    
-    	
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(force_value)
@@ -808,10 +804,8 @@ def save_if_needed(forces_array, force_value, step_number):
 
 @jax.jit
 def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, force_value):
-    # for plotting damage gif
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        #jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
         jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
@@ -823,8 +817,6 @@ def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, ste
             )
         )
     )
-    
-    	
     # Use lax.cond to choose branch without Python-side branching
 
     def write(arr):
@@ -840,10 +832,8 @@ def save_velo_if_needed(velo_array, velo_value, step_number):
     If step_number is one we want to save, write velo_value at that index,
     otherwise return velo_array unchanged.
     """
-    # for plotting damage gif
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        #jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
         jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
@@ -855,8 +845,6 @@ def save_velo_if_needed(velo_array, velo_value, step_number):
             )
         )
     )
-    
-    
 
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
@@ -1109,20 +1097,21 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     # Using mask to save forces at desired steps for plotting animation
     step_inds = jnp.arange(num_steps)
 
-    # to run optimization and plot damage
+    # to run optimization
     mask_all = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_inds <= 6000, step_inds % 500 == 0),
+        jnp.logical_and(step_inds <= 6000, step_inds % 2000 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_inds >= 6000,
             jnp.logical_and(
                 step_inds <= 15000,
-                step_inds % 1000 == 0
+                step_inds % 4000 == 0
             )
         )
     ) 
+    
     '''
     # to save when creating steps for gif 
     mask_all = jnp.logical_or(
@@ -1255,11 +1244,12 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     
     return loss_value
 
+
 ### Main Program ####
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.20       # Element length
+    delta_x = 0.19       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1438,18 +1428,18 @@ damage_to_plot = []
 strain_energy_to_plot = []
 
 # to get results ran w/ LR=0.1
-learning_rate = 0.1
+learning_rate = 0.03
 #learning_rate = 0.01
 # uses a learning rate schedule of 0.1 for the first 40 steps, then 0.01 for the remaining steps
 #def lr_schedule(step):
 #    return jnp.where(step < 10, 0.1, 0.01)
 
 def lr_schedule(step):
-    return jnp.where(step < 10, 0.002,
-           jnp.where(step < 40, 0.0002, 0.00002))
+    return jnp.where(step < 5,  0.05,
+           jnp.where(step < 15, 0.01,
+           jnp.where(step < 35, 0.002, 0.0005)))
 
-
-num_steps = 15
+num_steps = 50
 # ran for  steps to get optimized L1 norm distribution
 
 density_min = 0.0
@@ -1469,7 +1459,7 @@ max_time = 5.0E-03
 #optimizer = optax.adam(learning_rate = lr_schedule)
 #opt_state = optimizer.init(param)
 
-optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=learning_rate)
+optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=lr_schedule)
 opt_state = optimizer.init(param)
 
 # Optimization loop
