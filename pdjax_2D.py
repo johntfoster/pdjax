@@ -750,14 +750,14 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     """
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_number >= 6000,
             jnp.logical_and(
                 step_number <= 15000,
-                step_number % 4000 == 0
+                step_number % 1000 == 0
             )
         )
     )
@@ -772,12 +772,15 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
 @jax.jit
 def save_if_needed(forces_array, force_value, step_number):
     mask = jnp.logical_or(
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 2000) == 0),
+        # Phase 1: 0-6000, every 500 steps
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
+
+        # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_number >= 6000,
             jnp.logical_and(
                 step_number <= 15000,
-                lax.rem(step_number, 4000) == 0
+                step_number % 1000 == 0
             )
         )
     )
@@ -792,12 +795,15 @@ def save_if_needed(forces_array, force_value, step_number):
 @jax.jit
 def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, force_value):
     mask = jnp.logical_or(
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 2000) == 0),
+        # Phase 1: 0-6000, every 500 steps
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
+
+        # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_number >= 6000,
             jnp.logical_and(
                 step_number <= 15000,
-                lax.rem(step_number, 4000) == 0
+                step_number % 1000 == 0
             )
         )
     )
@@ -818,14 +824,14 @@ def save_velo_if_needed(velo_array, velo_value, step_number):
     """
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_number >= 6000,
             jnp.logical_and(
                 step_number <= 15000,
-                step_number % 4000 == 0
+                step_number % 1000 == 0
             )
         )
     )
@@ -1084,14 +1090,14 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
 
     mask_all = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_inds <= 6000, step_inds % 2000 == 0),
+        jnp.logical_and(step_inds <= 6000, step_inds % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_inds >= 6000,
             jnp.logical_and(
                 step_inds <= 15000,
-                step_inds % 4000 == 0
+                step_inds % 1000 == 0
             )
         )
     )
@@ -1226,7 +1232,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.25       # Element length
+    delta_x = 0.22       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1322,7 +1328,7 @@ if __name__ == "__main__":
     #print("thickness: ", thickness0)
     #print("thickness shape: ", thickness0.shape)
     #print("num_elems: ", num_elems)
-    results = _solve(params, state, thickness0, density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
+    results = _solve(params, state, thickness0, filtered_density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=float(max_time))
     #jax.debug.print("allow_damage in main: {a}", a=allow_damage)
 
 
@@ -1350,6 +1356,7 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
+    
     
     ##################################################
 # # Now using Optax to maximize
@@ -1405,22 +1412,20 @@ damage_to_plot = []
 strain_energy_to_plot = []
 
 # to get results ran w/ LR=0.1
-#learning_rate = 0.1
-learning_rate = 0.01
+#learning_rate = 0.01
+learning_rate = 0.1
 # uses a learning rate schedule of 0.1 for the first 40 steps, then 0.01 for the remaining steps
 #def lr_schedule(step):
-    #return jnp.where(step < 5, 0.1, 0.01)
+#    return jnp.where(step < 10, 0.1, 0.01)
 
-# use LR schedule when have weight in loss fn
-'''
 def lr_schedule(step):
-    return jnp.where(step < 10, 0.01,
-           jnp.where(step < 40, 0.001, 0.0001))
-'''
+    return jnp.where(step < 10, 0.002,
+           jnp.where(step < 40, 0.0002, 0.00002))
 
-#num_steps = 50
-num_steps = 40
-# ran for 20 steps to get optimized L1 norm distribution
+
+#num_steps = 70
+num_steps = 10
+# ran for  steps to get optimized L1 norm distribution
 
 density_min = 0.0
 density_max = 1.0
@@ -1526,7 +1531,111 @@ alpha = 0.1  # tune: 0 = pure damage, 1 = pure weight
 loss_and_grad = jax.value_and_grad(loss, argnums=3)
 
 
+#######################################################################
+# syntax for island removal in optimized structure
+from scipy import ndimage
 
+mpl.use('inline')
+# Use the PGF backend
+#mpl.use("pgf")
+plt.clf()
+
+
+# Configure LaTeX rendering
+mpl.rcParams.update({
+    "pgf.texsystem": "pdflatex",  # Or "xelatex" or "lualatex"
+    "text.usetex": True,          # Use LaTeX for all text
+    "font.family": "serif",       # Use a serif font
+    "pgf.rcfonts": False,         # Don't override font settingsweights_even_thickness= np.arange(len(full_thickness))
+})
+
+def remove_islands(density_grid, min_size_fraction=0.01):
+    """
+    Remove isolated islands (small disconnected regions) from a binary density grid.
+    
+    Args:
+        density_grid: 2D numpy array with values 0.0 or 1.0
+        min_size_fraction: Islands smaller than this fraction of total solid area are removed.
+                           E.g. 0.01 removes islands < 1% of total solid area.
+    Returns:
+        Cleaned 2D numpy array
+    """
+    grid_np = np.array(density_grid)
+    
+    # Label connected components of solid regions (density == 1)
+    labeled, num_features = ndimage.label(grid_np)
+    
+    if num_features == 0:
+        return density_grid
+    
+    # Count pixels per component
+    component_sizes = ndimage.sum(grid_np, labeled, range(1, num_features + 1))
+    total_solid = grid_np.sum()
+    min_size = min_size_fraction * total_solid
+    
+    # Build mask: keep only components above min_size
+    keep = np.zeros_like(grid_np)
+    for i, size in enumerate(component_sizes, start=1):
+        if size >= min_size:
+            keep[labeled == i] = 1.0
+    
+    return keep
+
+
+@jax.jit
+def threshold_density(density_field, threshold=0.15):
+    """ ## set to 0.45 here
+    Threshold the density field: set values above threshold to 1.0, below to 0.0.
+    """
+    return jnp.where(density_field > threshold, 1.0, 0.0)
+
+# In the plotting chunk, modify as follows:
+# Assuming params has nx and ny defined (nx = number_of_elements, ny = number_of_elements // 4)
+nx = params.number_of_elements
+ny = params.number_of_elements // 4
+
+# Filter the density field
+filtered_density_field = threshold_density(full_density_field)
+
+# Reshape density fields to grid shape (ny, nx)
+full_density_field_grid = filtered_density_field.reshape((ny, nx))
+
+# Remove isolated islands from the binary grid
+full_density_field_grid = remove_islands(full_density_field_grid, min_size_fraction=0.01)
+full_density_field_grid = jnp.array(full_density_field_grid)  # back to JAX if needed downstream
+
+# Create mirrored versions for plotting (mirror left half to right half)
+left_half_full = full_density_field_grid[:, :nx//2]
+mirrored_full_grid = jnp.concatenate([left_half_full, jnp.flip(left_half_full, axis=1)], axis=1)
+
+# Define the extent for the plot (full grid)
+x = jnp.linspace(-params.bar_length/2, params.bar_length/2, nx)
+y = jnp.linspace(-params.bar_length/8, params.bar_length/8, ny)
+extent = [x[0], x[-1], y[0], y[-1]]
+
+# Create a single plot for optimized density
+fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+
+# Plot optimized density (mirrored grid)
+im = ax.imshow(mirrored_full_grid, cmap='RdPu', extent=extent, origin='lower', vmin=0, vmax=1)
+#ax.set_title("Optimized Density (Mirrored)")
+ax.set_xlabel("X Position")
+ax.set_ylabel("Y Position")
+#plt.colorbar(im, ax=ax, label='Density')
+
+ax = plt.gca()  # Get the current axes
+ax.text(0.5, 1.25, "(b) Element Length=0.22", ha='center', va='top', fontsize=12, fontweight='normal',
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="black"), 
+        transform=ax.transAxes, zorder=10)
+
+#plt.axhline(0, color="k", linewidth=1)
+
+plt.tight_layout()
+plt.savefig("2D_opt_density_L1_horiz22_islandsRemoved.png", format="png", dpi=300, bbox_inches='tight')
+plt.show()
+
+
+#######################################################################
 # Optimization loop
 for step in range(num_steps):
     def true_fn(thickness):
