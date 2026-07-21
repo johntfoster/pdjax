@@ -661,10 +661,8 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	# Assuming you have E (elastic_modulus) and nu (poisson_ratio) available
 	E = 200E9
 	nu = 0.34
-	#c_bond = 12 * K / (jnp.pi * thickness * horizon**3 ) # Using bulk modulus K instead of E for LPS, no Poisson's ratio correction
+	c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
 	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
-	#c_bond = 12 * E / (jnp.pi * horizon**3 * (1 - nu)) # Plane stress (corrected from plane strain)
-	c_bond = 12 * E / (2 * (1 - nu) * jnp.pi * thickness * horizon**3) # rewrote using E instead of K
 
 	'''
 	if ref_mag_state < horizon - jnp.max(pos_x,pos_y)/2.0:
@@ -1257,14 +1255,25 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 
 def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float, strain_energy_max, weight_max, vf_0=1.0, alpha=0.1):
     output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
+    checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
 
-    strain_term = jnp.mean(output_vals.strain_energy) / strain_energy_max  # 0=stiffest, 1=least stiff
-    #weight_term = density_field.sum() / weight_max                          # 0=no material, 1=full material
+
+    # Compute FINAL damage (not saved damage)
+    #final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
+    #final_damage = output_vals[10]
+    final_damage = output_vals[11][-1]
+
+    #jax.debug.print("density_field in loss: {f}", f=density_field)
+    #loss_value = jnp.linalg.norm(final_damage, ord=1) + (np.linalg.norm(final_damage, ord=1) / (1 + density_field.sum()))  # Reduces density's direct impact
+    #loss_value = jnp.linalg.norm(final_damage, ord=1)  * ( 1 + 1 /density_field.sum()) 
+    #loss_value = jnp.linalg.norm(final_damage, ord=1)
+    #loss_value = jnp.linalg.norm(final_damage, ord=2)
     
+    strain_energy = output_vals.strain_energy
+    strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
+    normalization_factor = 1.0E5
+    loss_value = strain_energy_norm / normalization_factor
     
-    vf_target = 120 / density_field.size      # target volume fraction (e.g. 0.5)
-    volume_fraction = density_field.sum() / density_field.size
-    weight_term = (volume_fraction - vf_target) ** 2
 
     loss_value = (1 - alpha) * strain_term + alpha * weight_term
     return loss_value
@@ -1401,8 +1410,8 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-
-   ##################################################
+   
+##################################################
 # # Now using Optax to maximize
 # scalar param
 #param = jnp.array([1.0])
@@ -1453,7 +1462,7 @@ strain_energy_to_plot = []
 
 learning_rate = 0.01
 #num_steps = 70
-num_steps = 10
+num_steps = 20
 density_min = 0.0
 density_max = 1.0
 
@@ -1572,9 +1581,8 @@ for step in range(num_steps):
 
     # Compute loss and gradients (grads wrt full_density_field)
     loss_val, grads_full = loss_and_grad(
-        params, state, thickness, full_density_field,
-        forces_array, allow_damage, max_time,
-        strain_energy_max, weight_max, vf_0, alpha=0.1)
+        params, state, thickness, full_density_field, 
+        forces_array, allow_damage, max_time)
 
     # Extract grads only for the optimizable top half
     grads = grads_full[optimizable_indices]
@@ -1602,4 +1610,4 @@ for step in range(num_steps):
 
     #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
-    #print("total damage in optimization loop: ", output_vals.damage.sum())s
+    #print("total damage in optimization loop: ", output_vals.damage.sum())
