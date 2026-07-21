@@ -539,7 +539,8 @@ def compute_force_state_LPS(params, disp_x:jax.Array, disp_y:jax.Array, vol_stat
 	undamaged_influence_state_left = params.undamaged_influence_state_left
 	undamaged_influence_state_right = params.undamaged_influence_state_right
 	horizon = params.horizon
-
+	thickness = params.thickness[0]
+ 
     # Split disp and ref_pos into x/y components (new, to enable PD.py-style syntax)
 	pos_x = ref_pos[:, 0]  # Shape: (num_nodes,)
 	pos_y = ref_pos[:, 1]  # Shape: (num_nodes,)
@@ -1252,7 +1253,7 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	#jax.debug.print("vol_state in comp damage: {i}", i=vol_state)
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
-def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float):
+def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float, strain_energy_max, weight_max, vf_0=1.0, alpha=0.1):
     output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
     checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
 
@@ -1274,7 +1275,10 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
     loss_value = strain_energy_norm / normalization_factor
     
 
+    loss_value = (1 - alpha) * strain_term + alpha * weight_term
     return loss_value
+
+
 
 
 ### Main Program ####
@@ -1298,8 +1302,9 @@ if __name__ == "__main__":
     density = 7930.0
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
-    poisson_ratio = 0.34
-    prescribed_force = 3.0E10
+    poisson_ratio = 0.33  #note nu will always be 0.33 in this code since using bond based PDa
+    #prescribed_force = 3.0E10
+    prescribed_force = 1.5E10
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
@@ -1455,7 +1460,7 @@ loss_to_plot = []
 damage_to_plot = []
 strain_energy_to_plot = []
 
-learning_rate = 0.1
+learning_rate = 0.01
 #num_steps = 70
 num_steps = 20
 density_min = 0.0
@@ -1530,6 +1535,32 @@ def make_symmetric_density(top_params, left_fixed_density, right_fixed_density):
     full_density_field = full_density_field.at[no_damage_region_right].set(right_fixed_density)
 
     return full_density_field
+
+# Loss function (already defined as 'loss')
+init_full_density = make_symmetric_density(param, left_fixed_density, right_fixed_density)
+init_full_density = init_full_density.at[no_damage_region_left].set(left_fixed_density)
+init_full_density = init_full_density.at[no_damage_region_right].set(right_fixed_density)
+
+# Worst case strain energy: minimum density everywhere (least stiff)
+min_density_field = jnp.full_like(init_full_density, density_min + 1e-4)  # avoid exactly 0
+min_density_field = min_density_field.at[no_damage_region_left].set(left_fixed_density)
+min_density_field = min_density_field.at[no_damage_region_right].set(right_fixed_density)
+worst_strain_output = _solve(params, state, thickness, min_density_field, forces_array, allow_damage, max_time)
+strain_energy_max = float(jnp.mean(worst_strain_output.strain_energy))
+
+# Worst case weight: all nodes at density = 1.0
+weight_max = float(init_full_density.size * 1.0)
+
+print(f"strain_energy_max={strain_energy_max:.4f}, weight_max={weight_max:.1f}")
+
+#normalization_factor = 1.0E5
+#strain_energy_0 = float(jnp.linalg.norm(baseline_output.strain_energy, ord=jnp.inf))
+#strain_energy_0 = float(jnp.sum(baseline_output.strain_energy)) / normalization_factor  # update baseline too
+
+vf_0 = float(init_full_density.sum())
+#print(f"strain_energy_0={strain_energy_0:.4f}, vf_0={vf_0:.4f}")
+
+
 
 # Optimization loop
 for step in range(num_steps):

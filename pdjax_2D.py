@@ -200,8 +200,8 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the three leftmost x-values
-	leftmost_x = sorted_x[:3]
+	# Select the six leftmost x-values
+	leftmost_x = sorted_x[:5]
 
 	tol = 1e-8
 
@@ -215,8 +215,8 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the three rightmost x-values
-	rightmost_x = sorted_x[-3:]
+	# Select the five rightmost x-values
+	rightmost_x = sorted_x[-5:]
 
 	# Create mask for nodes with x in the rightmost three rows
 	right_edge_mask = (pd_nodes[:, 0] >= sorted_x[-3] - tol)
@@ -234,17 +234,17 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the five leftmost x-values
+	# Select the seven leftmost x-values
 	leftmost_x = sorted_x[:5]
 
 
-	# Create mask for nodes with x in the leftmost five rows
+	# Create mask for nodes with x in the leftmost seven rows
 	no_damage_left_mask = jnp.isin(pd_nodes[:, 0], leftmost_x)
 	no_damage_region_left = jnp.where(no_damage_left_mask)[0]  # Indices of selected nodes
 
-	# Select the three rightmost x-values
+	# Select the seven rightmost x-values
 	rightmost_x = sorted_x[-5:]
-	# Create mask for nodes with x in the rightmost three rows
+	# Create mask for nodes with x in the rightmost seven rows
 	no_damage_right_mask = jnp.isin(pd_nodes[:, 0], rightmost_x)
 	no_damage_region_right = jnp.where(no_damage_right_mask)[0]  # Indices of selected nodes
 
@@ -1235,10 +1235,21 @@ def loss(params, state, thickness_vector, density_field, forces_array, allow_dam
     #loss_value = (1 - alpha) * damage_term + alpha * weight_term
     #loss_value = damage_norm
     
-    strain_energy = output_vals.strain_energy
-    strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
-    normalization_factor = 1.0E5
-    loss_value = strain_energy_norm / normalization_factor
+    # Both terms start at 1.0 and scale relative to baseline
+    damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
+    #weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
+    
+    # Current — always pushes toward less material:
+    #weight_term = density_field.sum() / vf_0  # gradient always positive (remove material to reduce)
+
+	# Fix — penalizes deviation in either direction:
+    #vf_target = vf_0 / density_field.size      # target volume fraction (e.g. 0.5)
+    vf_target = 120 / density_field.size      # target volume fraction (e.g. 0.5)
+    volume_fraction = density_field.sum() / density_field.size
+    weight_term = (volume_fraction - vf_target) ** 2
+
+    #loss_value = (1 - alpha) * damage_term + alpha * weight_term
+    loss_value = damage_norm
     
     return loss_value
 
@@ -1338,7 +1349,7 @@ if __name__ == "__main__":
 
     ### make sure density field is correct shape ###
     density_field = jnp.full((params.num_nodes,), density_field)  # Convert scalar to array if needed
-
+    
     # Solve the problem with initial thickness
     thickness0 = ensure_thickness_vector(thickness0, params.num_nodes)
     #print("thickness: ", thickness0)
@@ -1372,8 +1383,8 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
-
-##################################################
+    
+        ##################################################
 # # Now using Optax to maximize
 # scalar param
 #param = jnp.array([1.0])
@@ -1386,8 +1397,8 @@ param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(params.nu
 init_density = param.copy()
 
 # setting density values in no_damage_regions
-left_fixed_density = 0.50
-right_fixed_density = 0.50
+left_fixed_density = 0.5
+right_fixed_density = 0.5
 
 # optimizing only half of bar, such that thickness is symmetric
 num_nodes = params.num_nodes
@@ -1419,7 +1430,8 @@ top_half_middle = top_half_middle[jnp.argsort(params.pd_nodes[top_half_middle, 0
 optimizable_indices = top_half_middle
 
 # Initialize param with the correct size (length of top_half_middle)
-param = jnp.ones((len(top_half_middle),)) * density_field
+#param = jnp.ones((len(top_half_middle),)) * density_field
+param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(len(top_half_middle),))
 
 loss_to_plot = []
 damage_to_plot = []
