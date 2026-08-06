@@ -922,7 +922,7 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 		right_bc_nodes = right_bc_region
 
 
-		#'''
+		'''
 		####### to apply BC for tension load ##################
 		# distribute evenly per node
 		force_per_node = ramp_force / left_bc_region.shape[0]
@@ -930,6 +930,22 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 		# apply boundary loads ONLY as external
 		external_force = external_force.at[left_bc_nodes, 0].add(-force_per_node)
 		external_force = external_force.at[right_bc_nodes, 0].add(force_per_node)
+		#########################################################
+		'''
+
+		#'''
+		####### to apply BC for bending load ##################
+		# linear bending profile over node height: -1 at bottom, 0 at mid-height, +1 at top
+		y_half_height = jnp.max(jnp.abs(pd_nodes[:, 1]))
+		left_bc_bend_factor = pd_nodes[left_bc_nodes, 1] / y_half_height
+		right_bc_bend_factor = pd_nodes[right_bc_nodes, 1] / y_half_height
+
+		# distribute evenly per node, then scale by height to form the bending moment
+		force_per_node = ramp_force / left_bc_region.shape[0]
+
+		# apply boundary loads ONLY as external: top in tension, bottom in compression
+		external_force = external_force.at[left_bc_nodes, 0].add(-force_per_node * left_bc_bend_factor)
+		external_force = external_force.at[right_bc_nodes, 0].add(force_per_node * right_bc_bend_factor)
 		#########################################################
 		#'''
 
@@ -1299,7 +1315,8 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.25
+    delta_x = 0.15       # Element length
+    #delta_x = 0.25
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1317,8 +1334,9 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.33  #note nu will always be 0.33 in this code since using bond based PDa
-    prescribed_force =1.5E10
-
+    #prescribed_force =1.5E10
+    # use prescribed_force = 2.5E10 for bending load w/ el len = 0.15
+    prescribed_force = 2.5E10
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
