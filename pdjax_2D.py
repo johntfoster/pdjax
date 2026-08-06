@@ -200,8 +200,8 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the six leftmost x-values
-	leftmost_x = sorted_x[:5]
+	# Select the three leftmost x-values
+	leftmost_x = sorted_x[:3]
 
 	tol = 1e-8
 
@@ -215,8 +215,8 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the five rightmost x-values
-	rightmost_x = sorted_x[-5:]
+	# Select the three rightmost x-values
+	rightmost_x = sorted_x[-3:]
 
 	# Create mask for nodes with x in the rightmost three rows
 	right_edge_mask = (pd_nodes[:, 0] >= sorted_x[-3] - tol)
@@ -234,17 +234,17 @@ def init_problem(bar_length: float = 20.0,
 	unique_x = jnp.unique(pd_nodes[:, 0])
 	sorted_x = jnp.sort(unique_x)
 
-	# Select the seven leftmost x-values
+	# Select the five leftmost x-values
 	leftmost_x = sorted_x[:5]
 
 
-	# Create mask for nodes with x in the leftmost seven rows
+	# Create mask for nodes with x in the leftmost five rows
 	no_damage_left_mask = jnp.isin(pd_nodes[:, 0], leftmost_x)
 	no_damage_region_left = jnp.where(no_damage_left_mask)[0]  # Indices of selected nodes
 
-	# Select the seven rightmost x-values
+	# Select the three rightmost x-values
 	rightmost_x = sorted_x[-5:]
-	# Create mask for nodes with x in the rightmost seven rows
+	# Create mask for nodes with x in the rightmost three rows
 	no_damage_right_mask = jnp.isin(pd_nodes[:, 0], rightmost_x)
 	no_damage_region_right = jnp.where(no_damage_right_mask)[0]  # Indices of selected nodes
 
@@ -748,20 +748,28 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
     If step_number is one we want to save, write disp_value at that index,
     otherwise return disp_array unchanged.
     """
+    
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_number >= 6000,
             jnp.logical_and(
-                step_number <= 25000,
-                step_number % 4000 == 0
+                step_number <= 15000,
+                step_number % 1000 == 0
             )
         )
     )
-
+    
+	
+    
+    ################################
+    '''
+    # for creating gif
+    mask = (step_number >= 0) & (step_number % 10 == 0)  # Save every 10 steps after step 0
+    '''
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(disp_value)
@@ -771,17 +779,21 @@ def save_disp_if_needed(disp_array, disp_value, step_number):
 
 @jax.jit
 def save_if_needed(forces_array, force_value, step_number):
+    # for creating gif
     mask = jnp.logical_or(
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 2000) == 0),
+        # Phase 1: 0-6000, every 500 steps
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
+
+        # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_number >= 6000,
             jnp.logical_and(
-                step_number <= 25000,
-                lax.rem(step_number, 4000) == 0
+                step_number <= 15000,
+                step_number % 1000 == 0
             )
         )
     )
-
+    
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(force_value)
@@ -791,16 +803,21 @@ def save_if_needed(forces_array, force_value, step_number):
 
 @jax.jit
 def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, step_number, force_value):
+    # for creating gif
     mask = jnp.logical_or(
-        jnp.logical_and(step_number <= 6000, lax.rem(step_number, 2000) == 0),
+        # Phase 1: 0-6000, every 500 steps
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
+
+        # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_number >= 6000,
             jnp.logical_and(
-                step_number <= 25000,
-                lax.rem(step_number, 4000) == 0
+                step_number <= 15000,
+                step_number % 1000 == 0
             )
         )
     )
+    
     # Use lax.cond to choose branch without Python-side branching
 
     def write(arr):
@@ -816,20 +833,20 @@ def save_velo_if_needed(velo_array, velo_value, step_number):
     If step_number is one we want to save, write velo_value at that index,
     otherwise return velo_array unchanged.
     """
+    # for creating gif
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_number <= 6000, step_number % 2000 == 0),
+        jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_number >= 6000,
             jnp.logical_and(
-                step_number <= 25000,
-                step_number % 4000 == 0
+                step_number <= 15000,
+                step_number % 1000 == 0
             )
         )
     )
-
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(velo_value)
@@ -882,13 +899,17 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 
 		left_bc_nodes = left_bc_region
 		right_bc_nodes = right_bc_region
-
+		#'''
+		####### to apply BC for tension load ##################
 		# distribute evenly per node
 		force_per_node = ramp_force / left_bc_region.shape[0]
 
 		# apply boundary loads ONLY as external
 		external_force = external_force.at[left_bc_nodes, 0].add(-force_per_node)
 		external_force = external_force.at[right_bc_nodes, 0].add(force_per_node)
+		#########################################################
+		#'''
+
 
 	### TOTAL FORCE = internal + external
 	force = internal_force + external_force
@@ -1081,20 +1102,28 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     # Using mask to save forces at desired steps for plotting animation
     step_inds = jnp.arange(num_steps)
 
-
+    # to run optimization
     mask_all = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
-        jnp.logical_and(step_inds <= 6000, step_inds % 2000 == 0),
+        jnp.logical_and(step_inds <= 6000, step_inds % 500 == 0),
 
         # Phase 2: 6000-15000, every 1000 steps
         jnp.logical_and(
             step_inds >= 6000,
             jnp.logical_and(
-                step_inds <= 25000,
-                step_inds % 4000 == 0
+                step_inds <= 15000,
+                step_inds % 1000 == 0
             )
         )
     )
+    
+    '''
+    # to save when creating steps for gif 
+    mask_all = jnp.logical_or(
+    jnp.logical_and(step_inds <= 1000, step_inds % 50 == 0),
+    jnp.logical_and(jnp.logical_and(step_inds >= 1000, step_inds <= 1600), step_inds % 200 == 0)
+)	'''
+    #mask_all = (step_inds >= 0) & (step_inds % 10 == 0)  # Save every 10 steps after step 0
 
     #jax.debug.print("disp vals returened: {d}", d=vals_returned[0])
     #jax.debug.print("vals returned [1] {v}", v=vals_returned[1])
@@ -1194,44 +1223,55 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 	#jax.debug.print("vol_state in comp damage: {i}", i=vol_state)
 	return 1 - ((inf_state * vol_state).sum(axis=1)) / ((undamaged_inf_state * vol_state).sum(axis=1))
 
-def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float, damage_norm_0=1.0, vf_0=1.0, alpha=0.1):
-    output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
-    checkify.check(jnp.all(jnp.isfinite(output_vals[0])), "NaN in solution")
+def loss(params, state, thickness_vector, density_field, forces_array, allow_damage, max_time,
+         damage_norm_0=1.0, vf_0=1.0, alpha=0.5):
+    output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field,
+                         forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
 
     final_damage = output_vals[11][-1]
-    
+    damage_norm = jnp.linalg.norm(final_damage, ord=1)
+    #damage_norm = jnp.linalg.norm(final_damage, ord=2)
+
+    # Both terms start at 1.0 and scale relative to baseline
+    #damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
+    #weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
+
     damage_norm = jnp.linalg.norm(final_damage, ord=1)
     #loss_value = jnp.linalg.norm(final_damage, ord=2)
     
     # Both terms start at 1.0 and scale relative to baseline
     damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
-    #weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
+    weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
     
     # Current — always pushes toward less material:
     #weight_term = density_field.sum() / vf_0  # gradient always positive (remove material to reduce)
 
 	# Fix — penalizes deviation in either direction:
     #vf_target = vf_0 / density_field.size      # target volume fraction (e.g. 0.5)
-    vf_target = 120 / density_field.size      # target volume fraction (e.g. 0.5)
-    volume_fraction = density_field.sum() / density_field.size
-    weight_term = (volume_fraction - vf_target) ** 2
+    #vf_target = 120 / density_field.size      # target volume fraction (e.g. 0.5)
+    #volume_fraction = density_field.sum() / density_field.size
+    #weight_term = (volume_fraction - vf_target) ** 2
 
     #loss_value = (1 - alpha) * damage_term + alpha * weight_term
-    loss_value = damage_norm
 
+    #loss_value = (1 - alpha) * damage_term + alpha * weight_term
+    
+    loss_value = damage_norm
+    
     #strain_energy = output_vals.strain_energy
     #strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
     #normalization_factor = 1.0E5
     #loss_value = strain_energy_norm / normalization_factor
     
-    return loss_value
+    return loss_value, output_vals
 
 
 ### Main Program ####
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.25       # Element length
+    #delta_x = 0.15       # Element length
+    delta_x = 0.15
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1250,6 +1290,7 @@ if __name__ == "__main__":
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
     prescribed_force = 1.5E10
+    #prescribed_force = 2.5E10
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
@@ -1321,7 +1362,7 @@ if __name__ == "__main__":
 
     ### make sure density field is correct shape ###
     density_field = jnp.full((params.num_nodes,), density_field)  # Convert scalar to array if needed
-    
+
     # Solve the problem with initial thickness
     thickness0 = ensure_thickness_vector(thickness0, params.num_nodes)
     #print("thickness: ", thickness0)
@@ -1355,18 +1396,22 @@ if __name__ == "__main__":
     plt.colorbar(scatter, label='Displacement Magnitude')  # Add colorbar for magnitude scale
     plt.tight_layout()
     plt.show()
- ##################################################
+
+##################################################
 # # Now using Optax to maximize
 # scalar param
 #param = jnp.array([1.0])
 density_field = 0.25
 thickness = jnp.full((params.num_nodes,), thickness0)
-param = jnp.full((params.num_nodes,), density_field)
+#param = jnp.full((params.num_nodes,), density_field)
+#init_density = param.copy()
+
+param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(params.num_nodes,))
 init_density = param.copy()
 
 # setting density values in no_damage_regions
-left_fixed_density = 0.5
-right_fixed_density = 0.5
+left_fixed_density = 0.50
+right_fixed_density = 0.50
 
 # optimizing only half of bar, such that thickness is symmetric
 num_nodes = params.num_nodes
@@ -1399,7 +1444,6 @@ optimizable_indices = top_half_middle
 
 # Initialize param with the correct size (length of top_half_middle)
 param = jnp.ones((len(top_half_middle),)) * density_field
-#param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(len(top_half_middle),))
 
 loss_to_plot = []
 damage_to_plot = []
@@ -1407,28 +1451,24 @@ max_damage_to_plot = []
 material_usage_to_plot = []
 strain_energy_to_plot =[]
 damage = []
+density_field_by_step = []
 
-# to get results ran w/ LR=0.1
 #learning_rate = 0.1
-#learning_rate = 1.0
-learning_rate = 0.01
-#learning_rate = 0.001
-#learning_rate = 0.01
-# uses a learning rate schedule of 0.1 for the first 40 steps, then 0.01 for the remaining steps
-#def lr_schedule(step):
-    #return jnp.where(step < 5, 0.1, 0.01)
 
-# use LR schedule when have weight in loss fn
-'''
+# use lr_schedule for 5 steps for w/ el len 0.18
 def lr_schedule(step):
-    return jnp.where(step < 10, 0.01,
-           jnp.where(step < 40, 0.001, 0.0001))
-'''
+    return jnp.where(step < 5,  0.05,
+           jnp.where(step < 15, 0.01,
+           jnp.where(step < 35, 0.002, 0.0005)))
 
-num_steps = 40
-#num_steps = 60
-# ran for 20 steps to get optimized L1 norm distribution
-
+# use LR=0.1 for optimized struct w/ el length 0.25 in 2D
+learning_rate = 0.1
+#num_steps = 70
+# run 40 steps for L1 el len 0.25
+#num_steps = 40
+# run 12 steps for L1 el len 0.25, LR = schedule
+num_steps = 20
+# good structure for el len 0.25 after 5 steps 
 density_min = 0.0
 density_max = 1.0
 
@@ -1439,28 +1479,21 @@ upper = 20
 #max_time = 1.0E-02
 max_time = 5.0E-03
 
-#max_time = 1.0E-02
 
 # Optax optimizer
-optimizer = optax.adam(learning_rate)
-#optimizer = optax.adam(learning_rate = lr_schedule)
-#opt_state = optimizer.init(param)
-
-#optimizer = optax.inject_hyperparams(optax.adam)(learning_rate=learning_rate)
+optimizer = optax.adam(learning_rate=lr_schedule)
 opt_state = optimizer.init(param)
 
 # Optimization loop
 damage_threshold = 0.5
 
-# Loss function (already defined as 'loss')
-loss_and_grad = jax.value_and_grad(loss, argnums=3)
 
 # Clamp function
 def clamp_params(grads):
     lower = 1E-05
     upper = 1.0E10
     #jax.debug.print("entering clamp_params: {t}", t=grads)
-    grads = jax.tree_util.tree_map(lambda x: jnp.clip(jnp.abs(x), lower, upper), grads)
+    grads = jax.tree_util.tree_map(lambda x: jnp.clip(abs(x), lower, upper), grads)
     #jax.debug.print("grad after clamping: {t}", t=grads)
     return grads
 
@@ -1509,7 +1542,6 @@ def make_symmetric_density(top_params, left_fixed_density, right_fixed_density):
 
     return full_density_field
 
-
 # Loss function (already defined as 'loss')
 init_full_density = make_symmetric_density(param, left_fixed_density, right_fixed_density)
 init_full_density = init_full_density.at[no_damage_region_left].set(left_fixed_density)
@@ -1517,22 +1549,18 @@ init_full_density = init_full_density.at[no_damage_region_right].set(right_fixed
 
 baseline_output = _solve(params, state, thickness, init_full_density,
                          forces_array, allow_damage, max_time)
-
 baseline_damage = baseline_output[11][-1]
 damage_norm_0 = jnp.linalg.norm(baseline_damage, ord=1)
-
 vf_0 = init_full_density.sum()  # use raw sum, not fraction
 print(f"damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
 
 
 print(f"Baseline damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
 
-alpha = 0.1  # tune: 0 = pure damage, 1 = pure weight
-
+#alpha = 0.3  # tune: 0 = pure damage, 1 = pure weight
+max_time = 5.0E-03
 # Loss and grad — argnums=3 differentiates w.r.t. density_field
-loss_and_grad = jax.value_and_grad(loss, argnums=3)
-
-
+loss_and_grad = jax.value_and_grad(loss, argnums=3, has_aux=True)
 
 # Optimization loop
 for step in range(num_steps):
@@ -1552,9 +1580,11 @@ for step in range(num_steps):
     full_density_field = full_density_field.at[no_damage_region_right].set(right_fixed_density)
 
     # Compute loss and gradients (grads wrt full_density_field)
-    loss_val, grads_full = loss_and_grad(
-        params, state, thickness, full_density_field, 
-        forces_array, allow_damage, max_time, damage_norm_0, vf_0, alpha)
+    (loss_val, output_vals), grads_full = loss_and_grad(
+        params, state, thickness, full_density_field,
+        forces_array, allow_damage, max_time,
+        damage_norm_0, vf_0)
+
 
     # Extract grads only for the optimizable top half
     grads = grads_full[optimizable_indices]
@@ -1565,25 +1595,24 @@ for step in range(num_steps):
     # Enforcing density bounds of 0-1
     param = jnp.clip(param, 0.0, 1.0)
 
-    # Now compute strain_energy and damage separately for plotting
-    output_vals = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
-
-    loss_to_plot.append(loss_val)
-    strain_energy_to_plot.append(strain_energy)
-    damage_to_plot.append(damage)
-    max_damage_to_plot.append(damage.max())
-    material_usage_to_plot.append(full_thickness.sum())
-
     # Compute final damage for plotting
     final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
-    damage_to_plot.append(final_damage)
 
-    
+    # Convert to numpy on append so device memory is freed instead of pinned for the whole run
+    loss_to_plot.append(np.asarray(loss_val))
+    strain_energy_to_plot.append(np.asarray(output_vals.strain_energy))
+    damage_to_plot.append(np.asarray(final_damage))
+    max_damage_to_plot.append(np.asarray(final_damage.max()))
+    material_usage_to_plot.append(np.asarray(full_density_field.sum()))
+    density_field_by_step.append(np.asarray(full_density_field))
+
+
    # Check if all damage is below 0.5 and exit early if so
-    if jnp.all(final_damage < 0.5):
-        print(f"Early exit at step {step}: All damage values are below 0.5")
-        break
+    #if jnp.all(final_damage < 0.5):
+        #print(f"Early exit at step {step}: All damage values are below 0.5")
+        #break
     
-
     #print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}")
     print(f"Step {step}, loss={loss_val}, density_field.sum={full_density_field.sum()}, gradient {grads}")
+    #print("total damage in optimization loop: ", output_vals.damage.sum())
+    #print("damage in optimization loop: ", damage[-1])
