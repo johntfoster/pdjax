@@ -1284,8 +1284,7 @@ def loss(params, state, thickness_vector, density_field, forces_array, allow_dam
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    #delta_x = 0.15       # Element length
-    delta_x = 0.15
+    delta_x = 0.15       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1303,8 +1302,7 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.34
-    prescribed_force = 1.5E10
-    #prescribed_force = 2.5E10
+    prescribed_force = 2.5E10
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
