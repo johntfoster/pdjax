@@ -1444,6 +1444,7 @@ optimizable_indices = top_half_middle
 
 # Initialize param with the correct size (length of top_half_middle)
 param = jnp.ones((len(top_half_middle),)) * density_field
+#param = 0.25 + 0.5 * jax.random.uniform(jax.random.PRNGKey(42), shape=(len(top_half_middle),))
 
 loss_to_plot = []
 damage_to_plot = []
@@ -1465,9 +1466,9 @@ def lr_schedule(step):
 learning_rate = 0.1
 #num_steps = 70
 # run 40 steps for L1 el len 0.25
-#num_steps = 40
+num_steps = 40
 # run 12 steps for L1 el len 0.25, LR = schedule
-num_steps = 20
+#num_steps = 1
 # good structure for el len 0.25 after 5 steps 
 density_min = 0.0
 density_max = 1.0
@@ -1562,6 +1563,59 @@ max_time = 5.0E-03
 # Loss and grad — argnums=3 differentiates w.r.t. density_field
 loss_and_grad = jax.value_and_grad(loss, argnums=3, has_aux=True)
 
+
+# ---------------------------------------------------------------
+# Sensitivity filter (Habibian et al. 2021, Composite Structures
+# 258:113345, Eq. 27-28) to avoid checkerboard patterns.
+# Precomputed once: node positions are fixed, only density/gradient
+# change during optimization, so the neighbor list and weights
+# psi(R_in) only need to be built a single time, before the loop.
+# ---------------------------------------------------------------
+R_min = 1.5 * params.dx   # filter radius; independent of the peridynamic horizon
+
+node_positions_filter = np.array(params.pd_nodes)
+filter_tree = scipy.spatial.cKDTree(node_positions_filter)
+raw_neighbor_lists_filter = filter_tree.query_ball_tree(filter_tree, r=R_min)
+
+max_neighbors_filter = max(len(n) for n in raw_neighbor_lists_filter)
+
+filter_idx_padded = np.zeros((num_nodes, max_neighbors_filter), dtype=int)
+filter_weight_padded = np.zeros((num_nodes, max_neighbors_filter))
+
+for i, neighbors in enumerate(raw_neighbor_lists_filter):
+    neighbors = np.array(neighbors)
+    dists = np.linalg.norm(node_positions_filter[neighbors] - node_positions_filter[i], axis=-1)
+    weights = R_min - dists   # psi(R_in); query_ball_tree already guarantees R_in <= R_min
+    n_i = len(neighbors)
+    filter_idx_padded[i, :n_i] = neighbors
+    filter_weight_padded[i, :n_i] = weights
+    # entries beyond n_i stay at index 0, weight 0.0 -> contribute nothing (safe padding)
+
+filter_idx_padded = jnp.array(filter_idx_padded)
+filter_weight_padded = jnp.array(filter_weight_padded)
+
+
+def filter_sensitivity(alpha_full, raw_grad_full):
+    """
+    Eq. 27: (d_hat U / d_alpha_i) = (1/alpha_i) * sum_n[psi(R_in) alpha_n dU/dalpha_n]
+                                                 / sum_n[psi(R_in)]
+    alpha_full, raw_grad_full: (num_nodes,) arrays over the FULL design domain
+    (not the symmetry-reduced optimizable_indices slice -- neighbors near the
+    symmetry lines need to see across them).
+    """
+    alpha_n = alpha_full[filter_idx_padded]        # (num_nodes, max_neighbors_filter)
+    grad_n = raw_grad_full[filter_idx_padded]      # (num_nodes, max_neighbors_filter)
+
+    numerator = (filter_weight_padded * alpha_n * grad_n).sum(axis=1)
+    denominator = filter_weight_padded.sum(axis=1)
+
+    eps = 1e-12
+    filtered = numerator / jnp.maximum(denominator, eps)
+    filtered = filtered / jnp.maximum(alpha_full, eps)
+    return filtered
+
+
+
 # Optimization loop
 for step in range(num_steps):
     def true_fn(thickness):
@@ -1584,10 +1638,15 @@ for step in range(num_steps):
         params, state, thickness, full_density_field,
         forces_array, allow_damage, max_time,
         damage_norm_0, vf_0)
+    
+    # Apply the sensitivity filter (Habibian et al. 2021, Eq. 27) over the full
+    # domain, THEN extract the optimizable top half.
+    filtered_grads_full = filter_sensitivity(full_density_field, grads_full)
+    grads = filtered_grads_full[optimizable_indices]
 
 
     # Extract grads only for the optimizable top half
-    grads = grads_full[optimizable_indices]
+    #grads = grads_full[optimizable_indices]
 
     updates, opt_state = optimizer.update(grads, opt_state, param)
     param = optax.apply_updates(param, updates)
@@ -1606,6 +1665,45 @@ for step in range(num_steps):
     material_usage_to_plot.append(np.asarray(full_density_field.sum()))
     density_field_by_step.append(np.asarray(full_density_field))
 
+
+        # run to get timing of forward solve and gradient evaluation
+    
+    if step == 0:
+        import time
+
+        # --- Warm-up: triggers JIT compilation, not timed ---
+        _ = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
+        jax.block_until_ready(_)
+
+        loss_and_grad_fn = jax.value_and_grad(loss, argnums=3, has_aux=True)
+        _ = loss_and_grad_fn(params, state, thickness, full_density_field,
+                            forces_array, allow_damage, max_time,
+                            damage_norm_0, vf_0, alpha=0.1)
+        jax.block_until_ready(_)
+
+        # --- Timed: forward-solve only ---
+        t0 = time.perf_counter()
+        fwd_result = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
+        jax.block_until_ready(fwd_result)
+        forward_time = time.perf_counter() - t0
+
+        # --- Timed: gradient evaluation (forward + backward) ---
+        t0 = time.perf_counter()
+        grad_result = loss_and_grad_fn(params, state, thickness, full_density_field,
+                                        forces_array, allow_damage, max_time,
+                                        damage_norm_0, vf_0, alpha=0.1)
+        jax.block_until_ready(grad_result)
+        gradient_time = time.perf_counter() - t0
+
+
+        num_steps_sim = int(max_time / 5.0E-07)
+        print(f"num_nodes:            {params.num_nodes}")
+        print(f"num_design_variables: {optimizable_indices.size}")
+        print(f"timesteps_per_solve:  {num_steps_sim}")
+        print(f"forward_solve_time:   {forward_time:.4f} s")
+        print(f"gradient_eval_time:   {gradient_time:.4f} s")
+        print(f"AD_overhead_factor:   {gradient_time/forward_time:.2f}x")
+    
 
    # Check if all damage is below 0.5 and exit early if so
     #if jnp.all(final_damage < 0.5):
