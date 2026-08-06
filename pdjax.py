@@ -1038,8 +1038,10 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	strain_energy = output_vals[11]
  
 	# Extract damage from output_vals
-	#damage = output_vals[7][-1]
-	damage = output_vals[7][-1]
+	#damage = output_vals[7][-1]  # NOTE: this reads a masked/checkpointed history that stops
+	# advancing past step 15000 (see calc_damage_if_needed's hardcoded mask), so for max_time
+	# corresponding to >15000 steps this silently returns a stale, non-final damage snapshot.
+	damage = compute_damage(output_vals[3], output_vals[5], output_vals[6])  # raw final-timestep damage
 
 	# Calc strain energy density
 	#total_volume = jnp.sum(vol_state)
@@ -1259,7 +1261,8 @@ damage = []
 
 learning_rate = 1.0
 #learning_rate = 0.1
-num_steps = 20
+#num_steps = 5000
+num_steps = 50
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
