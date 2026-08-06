@@ -786,7 +786,7 @@ def solve_one_step(params, vals, allow_damage:bool):
 	#time_step = 5.0E-08
 	#time_step = 2.5E-08
 	#time_step = 4.75E-08
-	time_step = 2.8E-08
+	time_step = 3.2E-08
 
 	num_steps = max_time / time_step
 
@@ -861,7 +861,7 @@ def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_dam
 
     #time_step = 2.5E-08
     #time_step = 4.75E-08
-    time_step = 2.8E-08
+    time_step = 3.2E-08
 
     num_steps = int(max_time / time_step)
 
@@ -1071,10 +1071,8 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	#Calling compute damage 
 	#jax.debug.print("inf state: {i}", i=output_vals[5])
-	loss_value = damage.sum()
-
-	jax.debug.print("damage: {l}", l=damage)
-	#loss_value = jnp.linalg.norm(damage, ord=1)
+	#loss_value = damage.sum()
+	loss_value = jnp.linalg.norm(damage, ord=1)
 	#loss_value = jnp.linalg.norm(damage, ord=2) * 10.0
 	#loss_value = damage.mean() * 1.0E3
  
@@ -1116,7 +1114,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.15       # Element length
+    delta_x = 0.17       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1192,7 +1190,7 @@ if __name__ == "__main__":
 	
     #max_time = 1.0E-01
     #max_time = 1.0
-    max_time = 1.0E-02
+    max_time = 1.0E-01
     
     max_time = float(max_time)
     
@@ -1226,9 +1224,9 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness0)
-    print("damage_final: ", results[7][-1])
     
     ##################################################
+    
 
 # # Now using Optax to maximize
 # random array of thickness values for initial thickness 
@@ -1270,7 +1268,7 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 1.0
-#num_steps = 20
+#num_steps = 25
 num_steps = 1
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
