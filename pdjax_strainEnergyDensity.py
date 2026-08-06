@@ -1236,8 +1236,8 @@ damage = []
 learning_rate = 1.0
 #learning_rate = 0.1
 #num_steps = 500
-#num_steps = 4659
-num_steps = 20
+num_steps = 4659
+#num_steps = 20
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
