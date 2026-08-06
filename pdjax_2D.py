@@ -899,14 +899,32 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 
 		left_bc_nodes = left_bc_region
 		right_bc_nodes = right_bc_region
-
+		#'''
+		####### to apply BC for tension load ##################
 		# distribute evenly per node
 		force_per_node = ramp_force / left_bc_region.shape[0]
 
 		# apply boundary loads ONLY as external
 		external_force = external_force.at[left_bc_nodes, 0].add(-force_per_node)
 		external_force = external_force.at[right_bc_nodes, 0].add(force_per_node)
+		#########################################################
+		#'''
 
+		'''
+		####### to apply BC for bending load ##################
+		# linear bending profile over node height: -1 at bottom, 0 at mid-height, +1 at top
+		y_half_height = jnp.max(jnp.abs(pd_nodes[:, 1]))
+		left_bc_bend_factor = pd_nodes[left_bc_nodes, 1] / y_half_height
+		right_bc_bend_factor = pd_nodes[right_bc_nodes, 1] / y_half_height
+
+		# distribute evenly per node, then scale by height to form the bending moment
+		force_per_node = ramp_force / left_bc_region.shape[0]
+
+		# apply boundary loads ONLY as external: top in tension, bottom in compression
+		external_force = external_force.at[left_bc_nodes, 0].add(-force_per_node * left_bc_bend_factor)
+		external_force = external_force.at[right_bc_nodes, 0].add(force_per_node * right_bc_bend_factor)
+		#########################################################
+		'''
 	### TOTAL FORCE = internal + external
 	force = internal_force + external_force
 	force_x = force[:, 0]
@@ -1225,20 +1243,20 @@ def loss(params, state, thickness_vector, density_field, forces_array, allow_dam
                          forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
 
     final_damage = output_vals[11][-1]
-    damage_norm = jnp.linalg.norm(final_damage, ord=1)
-    #damage_norm = jnp.linalg.norm(final_damage, ord=2)
+    #damage_norm = jnp.linalg.norm(final_damage, ord=1)
+    damage_norm = jnp.linalg.norm(final_damage, ord=2)
 
     # Both terms start at 1.0 and scale relative to baseline
-    damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
-    weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
+    #damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
+    #weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
 
     #loss_value = (1 - alpha) * damage_term + alpha * weight_term
-    #loss_value = damage_norm
+    loss_value = damage_norm
     
     # Both terms start at 1.0 and scale relative to baseline
     damage_term = damage_norm / damage_norm_0          # 1.0 at init, <1 if improving
     #weight_term = density_field.sum() / vf_0           # 1.0 at init, <1 if material removed
-    
+
     # Current — always pushes toward less material:
     #weight_term = density_field.sum() / vf_0  # gradient always positive (remove material to reduce)
 
@@ -1251,7 +1269,7 @@ def loss(params, state, thickness_vector, density_field, forces_array, allow_dam
     #loss_value = (1 - alpha) * damage_term + alpha * weight_term
     loss_value = damage_norm
     
-    return loss_value
+    return loss_value, output_vals
 
 
 ### Main Program ####
@@ -1454,7 +1472,8 @@ learning_rate = 0.1
 #num_steps = 70
 # run 40 steps for L1 el len 0.25
 #num_steps = 40
-num_steps = 12
+# run 12 steps for L1 el len 0.25, LR = schedule
+num_steps = 20
 # good structure for el len 0.25 after 5 steps 
 density_min = 0.0
 density_max = 1.0
@@ -1464,7 +1483,7 @@ lower = 1E-2
 upper = 20
 
 #max_time = 1.0E-02
-#max_time = 5.0E-03
+max_time = 5.0E-03
 
 
 # Optax optimizer
@@ -1547,7 +1566,7 @@ print(f"Baseline damage_norm_0={damage_norm_0:.4f}, vf_0={vf_0:.4f}")
 #alpha = 0.3  # tune: 0 = pure damage, 1 = pure weight
 max_time = 5.0E-03
 # Loss and grad — argnums=3 differentiates w.r.t. density_field
-loss_and_grad = jax.value_and_grad(loss, argnums=3)
+loss_and_grad = jax.value_and_grad(loss, argnums=3, has_aux=True)
 
 # Optimization loop
 for step in range(num_steps):
@@ -1567,7 +1586,7 @@ for step in range(num_steps):
     full_density_field = full_density_field.at[no_damage_region_right].set(right_fixed_density)
 
     # Compute loss and gradients (grads wrt full_density_field)
-    loss_val, grads_full = loss_and_grad(
+    (loss_val, output_vals), grads_full = loss_and_grad(
         params, state, thickness, full_density_field,
         forces_array, allow_damage, max_time,
         damage_norm_0, vf_0)
@@ -1582,21 +1601,17 @@ for step in range(num_steps):
     # Enforcing density bounds of 0-1
     param = jnp.clip(param, 0.0, 1.0)
 
-    # Now compute strain_energy and damage separately for plotting
-    output_vals = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
-
-    loss_to_plot.append(loss_val)
-    strain_energy_to_plot.append(output_vals.strain_energy)
-    damage_to_plot.append(output_vals.damage[-1])
-    max_damage_to_plot.append(output_vals.damage[-1].max())
-    material_usage_to_plot.append(full_density_field.sum())
-    density_field_by_step.append(full_density_field.copy())
-    
     # Compute final damage for plotting
     final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
-    damage_to_plot.append(final_damage)
 
-    
+    # Convert to numpy on append so device memory is freed instead of pinned for the whole run
+    loss_to_plot.append(np.asarray(loss_val))
+    strain_energy_to_plot.append(np.asarray(output_vals.strain_energy))
+    damage_to_plot.append(np.asarray(final_damage))
+    max_damage_to_plot.append(np.asarray(final_damage.max()))
+    material_usage_to_plot.append(np.asarray(full_density_field.sum()))
+    density_field_by_step.append(np.asarray(full_density_field))
+
    # Check if all damage is below 0.5 and exit early if so
     if jnp.all(final_damage < 0.5):
         print(f"Early exit at step {step}: All damage values are below 0.5")
