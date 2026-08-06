@@ -1,5 +1,6 @@
 from functools import partial
 import time
+import math
 
 import jax
 import jax.numpy as jnp
@@ -8,7 +9,6 @@ import numpy as np
 import scipy.spatial
 import scipy.optimize
 import matplotlib.pyplot as plt
-import matplotlib as mpl
 import matplotlib.animation as animation
 
 
@@ -44,6 +44,7 @@ class PDParams(NamedTuple):
 	bar_length: float
 	number_of_elements: int
 	bulk_modulus: float
+	elastic_modulus: float
 	density: float
 	thickness: jnp.ndarray
 	horizon: float
@@ -90,6 +91,7 @@ class PDState(NamedTuple):
 def init_problem(bar_length: float = 20.0,
 				 density: float = 1.0,
 				 bulk_modulus: float = 100.0,
+				 elastic_modulus: float = 300.0,
 				 number_of_elements: int = 20,
 				 horizon: Optional[float] = None,
 				 thickness: Union[float, np.ndarray] = 1.0,
@@ -196,7 +198,7 @@ def init_problem(bar_length: float = 20.0,
 
 	# package params
 	params = PDParams(
-		bar_length, number_of_elements, bulk_modulus, density, thickness_arr,
+		bar_length, number_of_elements, bulk_modulus, elastic_modulus, density, thickness_arr,
 		horizon, critical_stretch, prescribed_velocity, prescribed_force,
 		nodes, lengths, pd_nodes, num_nodes, neighborhood,
 		reference_position_state, reference_magnitude_state, num_neighbors, max_neighbors,
@@ -405,6 +407,24 @@ def safe_divide(num: jax.Array, denom: jax.Array, eps: float = 1e-12):
 	denom_safe = jax.vmap(row_fn, in_axes=0)(denom)
 
 	return num / denom_safe
+
+
+@jax.jit
+def compute_stable_time_step(families, ref_mag_state, volumes, num_nodes, 
+        bulk_modulus,rho,horizon):
+
+    spring_constant = 18.0 * bulk_modulus / math.pi / horizon**4.0
+
+    crit_time_step_denom = np.array([spring_constant * volumes[families[i]] / 
+            ref_mag_state[i] for i in range(num_nodes)])**0.5
+
+    critical_time_steps = np.sqrt(2.0 * rho) / crit_time_step_denom
+    
+    nodal_min_time_step = [ np.amin(item) for item in critical_time_steps ]
+
+    return np.amin(nodal_min_time_step)
+
+
 ###########################
 
 # Compute the force vector-state using a LPS peridynamic formulation
@@ -468,7 +488,7 @@ def compute_force_state_LPS(params,disp:jax.Array,  vol_state:jax.Array, inf_sta
 	stretch = jnp.where(ref_mag_state > 1.0e-16, exten_state / ref_mag_state, 0.0)
 	#jax.debug.print("stretch beofore my_stretch_where {s}", s=exten_state / ref_mag_state)
 	#stretch = my_stretch_where(ref_mag_state, exten_state)
-
+	
     # Apply critical stretch fracture criteria to update inf state
 	def damage_branch(inf_state):
 		#inf_state_updated = jnp.where(stretch > critical_stretch, 0.0, inf_state)
@@ -576,34 +596,6 @@ def save_if_needed(forces_array, force_value, step_number):
         )
     )
 
-    
-    '''
-    mask = jnp.logical_or(
-        jnp.logical_or(
-            # Phase 1: 0-6000, every 500 steps
-            jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
-
-            # Phase 2: 6000-12000, every 1000 steps
-            jnp.logical_and(
-                step_number > 6000,
-                jnp.logical_and(
-                    step_number <= 13000,
-                    step_number % 1000 == 0
-                )
-            )
-        ),
-        
-        # Phase 3: 13000-43000, every 5000 steps
-        jnp.logical_and(
-            step_number > 13000,
-            jnp.logical_and(
-                step_number <= 43000,
-                step_number % 5000 == 0
-            )
-        )
-    )
-    '''
-
     # Use lax.cond to choose branch without Python-side branching
     def write(arr):
         return arr.at[step_number].set(force_value)
@@ -617,7 +609,6 @@ def calc_damage_if_needed(vol_state, inf_state, undamaged_inf_state, damage, ste
     If step_number is one we want to save, write force_value at that index,
     otherwise return forces_array unchanged.
     """
-
     mask = jnp.logical_or(
         # Phase 1: 0-6000, every 500 steps
         jnp.logical_and(step_number <= 6000, step_number % 500 == 0),
@@ -782,11 +773,20 @@ def solve_one_step(params, vals, allow_damage:bool):
 	right_bc_region = params.right_bc_region
 	pd_nodes = params.pd_nodes
 	rho = params.density
+	E = params.elastic_modulus 
+	horizon = params.horizon
+	families = params.neighborhood
+	ref_mag_state = params.reference_magnitude_state
+
 
 
 	# TODO: Solve for stable time step
-	time_step = 5.0E-08
-    #time_step = 1E-07
+ 	#time_step = compute_stable_time_step(families, ref_mag_state, volumes, num_nodes, bulk_modulus, rho, horizon)
+	#jax.debug.print("Computed stable time step: {t}", t=time_step)
+	#time_step = 5.0E-08
+	#time_step = 2.5E-08
+	#time_step = 4.75E-08
+	time_step = 2.8E-08
 
 	num_steps = max_time / time_step
 
@@ -859,8 +859,9 @@ def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_dam
 
     EPS = 1.0e-12  # Minimum safe volume to avoid NaNs
 
-    time_step = 5.0E-08
-    #time_step = 1.0e-07
+    #time_step = 2.5E-08
+    #time_step = 4.75E-08
+    time_step = 2.8E-08
 
     num_steps = int(max_time / time_step)
 
@@ -928,7 +929,7 @@ def _solve(params, state, thickness:jax.Array, forces_array:jax.Array, allow_dam
             )
         )
     )
-    
+
 
     forces_saved = vals_returned[9][mask_all]
     #jax.debug.print("forces_saved after sim: {f}", f=forces_saved)
@@ -1038,7 +1039,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 	strain_energy = output_vals[11]
  
 	# Extract damage from output_vals
-	#damage = output_vals[7][-1]  # NOTE: this reads a masked/checkpointed history that stops
+	#damage = output_vals[7][-1]  # NOTE: reads a masked/checkpointed history that stops
 	# advancing past step 15000 (see calc_damage_if_needed's hardcoded mask), so for max_time
 	# corresponding to >15000 steps this silently returns a stale, non-final damage snapshot.
 	damage = compute_damage(output_vals[3], output_vals[5], output_vals[6])  # raw final-timestep damage
@@ -1049,36 +1050,73 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], forces_array:U
 
 	# calc L1 norm strain energy density
 	#strain_energy_L1_norm = jnp.linalg.norm(strain_energy, ord=1, axis=0)
-	#strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
-
-	#jax.debug.print("thickness in loss: {s}", s=thickness_vector)
+	strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
 
 	normalization_factor = 1E12
 	
 	mean_thickness = thickness_vector.mean()
 	max_thickness = thickness_vector.max()
 	min_thickness = thickness_vector.min()
- 
-	mean_damage = damage.sum() / params.num_nodes
-	max_damage = damage.max()
 
 	critical_thickness = 0.5
 	penalty_weight = 1e15
 	thickness_penalty = jnp.maximum(0.0, critical_thickness - min_thickness)
 
-	#loss_value = damage.sum()  #
-	loss_value = jnp.linalg.norm(damage, ord=1)
-	#loss_value = jnp.linalg.norm(damage, ord=2)
+	# loss value that implements thickness penalty
+	# loss_value = strain_energy_norm / normalization_factor 
+	# loss_value = strain_energy_norm / normalization_factor + mean_thickness/max_thickness * 1E9 
 
-	#loss_value =  0.9 * max_damage + 0.1 * mean_thickness / max_thickness
+
+	#print("undamaged_inf_state: ", output_vals[6])
+
+	#Calling compute damage 
+	#jax.debug.print("inf state: {i}", i=output_vals[5])
+	loss_value = damage.sum()
+
+	jax.debug.print("damage: {l}", l=damage)
+	#loss_value = jnp.linalg.norm(damage, ord=1)
+	#loss_value = jnp.linalg.norm(damage, ord=2) * 10.0
+	#loss_value = damage.mean() * 1.0E3
+ 
+    # Weights for balancing mean and max (adjust w_mean and w_max based on your priorities)
+	#w_sum = 0.5 # Weight for mean damage (e.g., 70% focus on overall average)
+	#w_max = 0.5  # Weight for max damage (e.g., 30% focus on peaks)
+
+	#sum_damage = damage.sum()  #
+	#max_damage = jnp.max(damage)    # Maximum damage value across all nodes and saved time steps
+
+	#loss_value = w_sum * sum_damage + (w_max * max_damage * 10.0)
+
+
+	#### Analyzing different loss functions ####
+	# No thickness dependence
+	# loss_value = strain_energy_norm / normalization_factor
+
+	# With thickness dependence, penalize for total thickness
+	#loss_value = strain_energy_density / normalization_factor + thickness_vector.sum()
+	
+	# Ratio, encourage low strain energy per unit thickness 
+	#loss_value = (strain_energy_density / normalization_factor) / (jnp.sum(thickness_vector) + 1e-8)
+
+	# Max thickness penalization, limit largest thickness
+	gamma = 100.0
+	#loss_value =  strain_energy_density / normalization_factor + gamma * jnp.max(thickness_vector)
+
+	# Inverse thickness penalization, prefer thicker regions for strength
+	#loss_value = jnp.sum(strain_energy_density / (thickness_vector + 1e-8))
+
+	# Weighted combination, multi-objective
+	#loss_value = 0.6 * (strain_energy_norm / normalization_factor) + 0.4 * (jnp.sum(thickness_vector) / normalization_factor)
 
 	return loss_value, (strain_energy, damage)
+
+
 
 ### Main Program ####
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.25       # Element length
+    delta_x = 0.11       # Element length
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1145,19 +1183,21 @@ if __name__ == "__main__":
         bar_length=fixed_length,
         density=density,
         bulk_modulus=bulk_modulus,
+        elastic_modulus=elastic_modulus,
         number_of_elements=int(fixed_length / delta_x),
         horizon=fixed_horizon,
         thickness=thickness,
         prescribed_force=prescribed_force,
         critical_stretch= critical_stretch)
 	
-    max_time = 1.0E-01
+    #max_time = 1.0E-01
     #max_time = 1.0
-    #max_time = 5.0E-03
+    max_time = 1.0E-02
     
     max_time = float(max_time)
     
-    time_step = 5.0E-08
+    
+    time_step = 2.5E-08
     num_steps = int(max_time / time_step)
     
     forces_array = jnp.full((num_steps,), 0.0)
@@ -1182,12 +1222,15 @@ if __name__ == "__main__":
     ax.set_xlabel("Node Position")
     ax.set_ylabel("Displacement")
     ax.set_title("Displacement vs Node Position (Forward Problem)")
-    ax.set_ylim(-1.0, 1.0)
+    #ax.set_ylim(-2.5,2.5)
     plt.tight_layout()
     plt.show()
     print("thickness: ",thickness0)
+    print("damage_final: ", results[7][-1])
     
-    # # Now using Optax to maximize
+    ##################################################
+
+# # Now using Optax to maximize
 # random array of thickness values for initial thickness 
 #key = jax.random.PRNGKey(0) 
 #shape = (params.num_nodes,)  # Example shape
@@ -1211,48 +1254,15 @@ print("middle region: ", middle_region)
 optimizable_indices = jnp.arange(0, mid_index)
 optimizable_indices = optimizable_indices[~jnp.isin(optimizable_indices, no_damage_region_left)]
 
-#print("no_damage_region_left: ", no_damage_region_left)
-#print("no_damage_region_right: ", no_damage_region_right)
-#print("optimizable_indices: ", optimizable_indices)
+print("no_damage_region_left: ", no_damage_region_left)
+print("no_damage_region_right: ", no_damage_region_right)
+print("optimizable_indices: ", optimizable_indices)
 
 param = jnp.ones((optimizable_indices.size,)) 
-#key = jax.random.PRNGKey(11)
-#shape = (optimizable_indices.size,)  # Example shape
-#param = jax.random.uniform(key, shape=shape, minval=0.3, maxval=5.0)
 print("initial param: ", param)
-
-# ----------------------------
-# Checkpointing setup
-# ----------------------------
-# Change experiment_tag whenever the loss norm, random seed, or other setup in this
-# cell changes, so that resuming doesn't accidentally load a checkpoint from a
-# different experiment.
-import pickle
-from pathlib import Path
-
-experiment_tag = "1D_bar_damage_L1"
-checkpoint_dir = Path("checkpoints") / experiment_tag
-checkpoint_dir.mkdir(parents=True, exist_ok=True)
-checkpoint_every = 5  # save a checkpoint every N optimization steps
-
-def _checkpoint_path(step):
-	return checkpoint_dir / f"checkpoint_step_{step}.pkl"
-
-def _latest_checkpoint():
-	ckpts = list(checkpoint_dir.glob("checkpoint_step_*.pkl"))
-	if not ckpts:
-		return None
-	return max(ckpts, key=lambda p: int(p.stem.split("_")[-1]))
-
-def save_checkpoint(step, param, opt_state, history):
-	with open(_checkpoint_path(step), "wb") as f:
-		pickle.dump({"step": step, "param": param, "opt_state": opt_state, "history": history}, f)
-	print(f"Saved checkpoint at step {step} -> {_checkpoint_path(step)}")
 
 loss_to_plot = []
 damage_to_plot = []
-max_damage_to_plot = []
-material_usage_to_plot = []
 strain_energy_to_plot =[]
 damage = []
 
@@ -1260,57 +1270,23 @@ damage = []
 #learning_rate = 1E-1
 
 learning_rate = 1.0
-#learning_rate = 0.1
-#num_steps = 5000
-num_steps = 50
+#num_steps = 20
+num_steps = 1
+
 thickness_min = 1.0E-2
 thickness_max = 1.0E2
 
-## Define gradient bounds
+# Define gradient bounds
 lower = 1E-2
 upper = 20
 
 #max_time = 1.0E-02
 max_time = 5.0E-03
 #max_time = 1.0E-03
-#max_time = 1.0E-01
-
-'''
-# setting learning rate schedule
-schedule = optax.piecewise_constant_schedule(
-    init_value=1.0,  # Starting LR at 1.0
-    boundaries_and_scales={
-        20: 0.1,   # At step 20 , multiply by 0.1 (change to 0.1), and stay at 0.1 thereafter
-    }
-)
-
 
 # Optax optimizer
-optimizer = optax.adam(schedule)
+optimizer = optax.adam(learning_rate)
 opt_state = optimizer.init(param)
-'''
-
-# Optax optimizer
-optimizer = optax.adam(learning_rate=1.0)
-opt_state = optimizer.init(param)
-
-# Resume from the latest checkpoint, if one exists for this experiment_tag
-start_step = 0
-_ckpt_file = _latest_checkpoint()
-if _ckpt_file is not None:
-	with open(_ckpt_file, "rb") as f:
-		_ckpt = pickle.load(f)
-	param = _ckpt["param"]
-	opt_state = _ckpt["opt_state"]
-	loss_to_plot = _ckpt["history"]["loss_to_plot"]
-	damage_to_plot = _ckpt["history"]["damage_to_plot"]
-	max_damage_to_plot = _ckpt["history"]["max_damage_to_plot"]
-	material_usage_to_plot = _ckpt["history"]["material_usage_to_plot"]
-	strain_energy_to_plot = _ckpt["history"]["strain_energy_to_plot"]
-	start_step = _ckpt["step"] + 1
-	print(f"Resuming '{experiment_tag}' from checkpoint at step {_ckpt['step']} ({_ckpt_file})")
-else:
-	print(f"No checkpoint found for '{experiment_tag}', starting from scratch.")
 
 # Optimization loop
 damage_threshold = 0.5
@@ -1349,27 +1325,8 @@ def make_symmetric_thickness(left_params):
 
     return full_thickness
 
-initial_full_thickness = make_symmetric_thickness(param)
-
-# Cache the baseline forward solve (expensive) so reopening the notebook doesn't
-# force a recompute; stored alongside the optimization checkpoints for this experiment.
-baseline_cache_file = checkpoint_dir / "baseline_damage.pkl"
-if baseline_cache_file.exists():
-	with open(baseline_cache_file, "rb") as f:
-		baseline_damage = pickle.load(f)
-	print("Loaded cached baseline damage from disk.")
-else:
-	baseline_output = _solve(params, state, thickness=initial_full_thickness, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
-	baseline_damage = baseline_output.damage[-1]
-	with open(baseline_cache_file, "wb") as f:
-		pickle.dump(baseline_damage, f)
-	print("Computed baseline damage and cached it to disk.")
-
-print("initial damage, full vector: ", baseline_damage)
-print("Baseline damage (initial thickness): ", baseline_damage.sum())
-
 # Optimization loop
-for step in range(start_step, num_steps):
+for step in range(num_steps):
 	def true_fn(thickness):
 		jax.debug.print("thickness is all finite.")
 		return thickness
@@ -1398,33 +1355,43 @@ for step in range(start_step, num_steps):
 	param = optax.apply_updates(param, updates)
 	param = jnp.clip(jnp.abs(param), 0.3, None)
 
-	loss_to_plot.append(loss_val)
-	strain_energy_to_plot.append(strain_energy)
-	damage_to_plot.append(damage)
-	max_damage_to_plot.append(damage.max())
-	material_usage_to_plot.append(full_thickness.sum())
+	#loss_to_plot.append(loss_val)
+	#strain_energy_to_plot.append(strain_energy)
+	#damage_to_plot.append(damage)
+ 
+	if step == 0:
+		import time
 
-	jax.debug.print("Step {s}, loss={l}, thickness={t}, gradients={g}, total_damage={d}", d=damage.sum(),
-					s=step, l=loss_val, t=full_thickness, g=grads)
-	print("damage in optimization loop: ", damage_to_plot[-1].sum())
+		# --- Warm-up: triggers JIT compilation, not timed ---
+		_ = _solve(params, state, thickness=full_thickness, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
+		jax.block_until_ready(_)
 
-	damage_threshold = 0.5
+		loss_and_grad_fn = jax.value_and_grad(loss, argnums=2, has_aux=True)
+		_ = loss_and_grad_fn(params, state, full_thickness,
+							 forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
+		jax.block_until_ready(_)
 
-	history = {
-		"loss_to_plot": loss_to_plot,
-		"damage_to_plot": damage_to_plot,
-		"max_damage_to_plot": max_damage_to_plot,
-		"material_usage_to_plot": material_usage_to_plot,
-		"strain_energy_to_plot": strain_energy_to_plot,
-	}
+		# --- Timed: forward-solve only ---
+		t0 = time.perf_counter()
+		fwd_result = _solve(params, state, thickness=full_thickness, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
+		jax.block_until_ready(fwd_result)
+		forward_time = time.perf_counter() - t0
 
-	# Periodic checkpoint keyed by cumulative step count
-	if (step + 1) % checkpoint_every == 0:
-		save_checkpoint(step, param, opt_state, history)
+		# --- Timed: gradient evaluation (forward + backward) ---
+		t0 = time.perf_counter()
+		grad_result = loss_and_grad_fn(params, state, full_thickness,
+										forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
+		jax.block_until_ready(grad_result)
+		gradient_time = time.perf_counter() - t0
 
-	# Early stopping condition: Check if ALL node damages are below the threshold
-	if jnp.all(damage < damage_threshold):
-		print(f"Early stopping at step {step}: All damages are below {damage_threshold}.")
-		jax.debug.print("Early stopping: All damages below threshold.")
-		save_checkpoint(step, param, opt_state, history)
-		break  # Exit the loop
+		num_steps_sim = int(max_time / 5.0E-08)
+		print(f"num_nodes:            {params.num_nodes}")
+		print(f"num_design_variables: {optimizable_indices.size}")
+		print(f"timesteps_per_solve:  {num_steps_sim}")
+		print(f"forward_solve_time:   {forward_time:.4f} s")
+		print(f"gradient_eval_time:   {gradient_time:.4f} s")
+		print(f"AD_overhead_factor:   {gradient_time/forward_time:.2f}x")
+
+	jax.debug.print("Step {s}, loss={l}, thickness={t}",
+					s=step, l=loss_val, t=full_thickness)
+	print("damage in optimization loop: ", damage[-1])
