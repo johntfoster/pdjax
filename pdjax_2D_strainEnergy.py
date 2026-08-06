@@ -922,7 +922,7 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 		right_bc_nodes = right_bc_region
 
 
-		'''
+		#'''
 		####### to apply BC for tension load ##################
 		# distribute evenly per node
 		force_per_node = ramp_force / left_bc_region.shape[0]
@@ -931,23 +931,9 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 		external_force = external_force.at[left_bc_nodes, 0].add(-force_per_node)
 		external_force = external_force.at[right_bc_nodes, 0].add(force_per_node)
 		#########################################################
-		'''
-
 		#'''
-		####### to apply BC for bending load ##################
-		# linear bending profile over node height: -1 at bottom, 0 at mid-height, +1 at top
-		y_half_height = jnp.max(jnp.abs(pd_nodes[:, 1]))
-		left_bc_bend_factor = pd_nodes[left_bc_nodes, 1] / y_half_height
-		right_bc_bend_factor = pd_nodes[right_bc_nodes, 1] / y_half_height
 
-		# distribute evenly per node, then scale by height to form the bending moment
-		force_per_node = ramp_force / left_bc_region.shape[0]
 
-		# apply boundary loads ONLY as external: top in tension, bottom in compression
-		external_force = external_force.at[left_bc_nodes, 0].add(-force_per_node * left_bc_bend_factor)
-		external_force = external_force.at[right_bc_nodes, 0].add(force_per_node * right_bc_bend_factor)
-		#########################################################
-		#'''
 
 	### TOTAL FORCE = internal + external
 	force = internal_force + external_force
@@ -1315,8 +1301,8 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.15       # Element length
-    #delta_x = 0.25
+    #delta_x = 0.15       # Element length
+    delta_x = 0.25
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1334,9 +1320,9 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.33  #note nu will always be 0.33 in this code since using bond based PDa
-    #prescribed_force =1.5E10
+    prescribed_force =1.5E10
     # use prescribed_force = 2.5E10 for bending load w/ el len = 0.15
-    prescribed_force = 2.5E10
+    #prescribed_force = 2.5E10
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
@@ -1606,6 +1592,56 @@ vf_0 = float(init_full_density.sum())
 #print(f"strain_energy_0={strain_energy_0:.4f}, vf_0={vf_0:.4f}")
 
 
+# ---------------------------------------------------------------
+# Sensitivity filter (Habibian et al. 2021, Composite Structures
+# 258:113345, Eq. 27-28) to avoid checkerboard patterns.
+# Precomputed once: node positions are fixed, only density/gradient
+# change during optimization, so the neighbor list and weights
+# psi(R_in) only need to be built a single time, before the loop.
+# ---------------------------------------------------------------
+R_min = 1.5 * params.dx   # filter radius; independent of the peridynamic horizon
+
+node_positions_filter = np.array(params.pd_nodes)
+filter_tree = scipy.spatial.cKDTree(node_positions_filter)
+raw_neighbor_lists_filter = filter_tree.query_ball_tree(filter_tree, r=R_min)
+
+max_neighbors_filter = max(len(n) for n in raw_neighbor_lists_filter)
+
+filter_idx_padded = np.zeros((num_nodes, max_neighbors_filter), dtype=int)
+filter_weight_padded = np.zeros((num_nodes, max_neighbors_filter))
+
+for i, neighbors in enumerate(raw_neighbor_lists_filter):
+    neighbors = np.array(neighbors)
+    dists = np.linalg.norm(node_positions_filter[neighbors] - node_positions_filter[i], axis=-1)
+    weights = R_min - dists   # psi(R_in); query_ball_tree already guarantees R_in <= R_min
+    n_i = len(neighbors)
+    filter_idx_padded[i, :n_i] = neighbors
+    filter_weight_padded[i, :n_i] = weights
+    # entries beyond n_i stay at index 0, weight 0.0 -> contribute nothing (safe padding)
+
+filter_idx_padded = jnp.array(filter_idx_padded)
+filter_weight_padded = jnp.array(filter_weight_padded)
+
+
+def filter_sensitivity(alpha_full, raw_grad_full):
+    """
+    Eq. 27: (d_hat U / d_alpha_i) = (1/alpha_i) * sum_n[psi(R_in) alpha_n dU/dalpha_n]
+                                                 / sum_n[psi(R_in)]
+    alpha_full, raw_grad_full: (num_nodes,) arrays over the FULL design domain
+    (not the symmetry-reduced optimizable_indices slice -- neighbors near the
+    symmetry lines need to see across them).
+    """
+    alpha_n = alpha_full[filter_idx_padded]        # (num_nodes, max_neighbors_filter)
+    grad_n = raw_grad_full[filter_idx_padded]      # (num_nodes, max_neighbors_filter)
+
+    numerator = (filter_weight_padded * alpha_n * grad_n).sum(axis=1)
+    denominator = filter_weight_padded.sum(axis=1)
+
+    eps = 1e-12
+    filtered = numerator / jnp.maximum(denominator, eps)
+    filtered = filtered / jnp.maximum(alpha_full, eps)
+    return filtered
+
 
 # Optimization loop
 for step in range(num_steps):
@@ -1631,9 +1667,14 @@ for step in range(num_steps):
         params, state, thickness, full_density_field,
         forces_array, allow_damage, max_time,
         strain_energy_max, weight_max, vf_0, alpha=0.1)
+    
+    # Apply the sensitivity filter (Habibian et al. 2021, Eq. 27) over the full
+    # domain, THEN extract the optimizable top half.
+    filtered_grads_full = filter_sensitivity(full_density_field, grads_full)
+    grads = filtered_grads_full[optimizable_indices]
 
     # Extract grads only for the optimizable top half
-    grads = grads_full[optimizable_indices]
+    #grads = grads_full[optimizable_indices]
 
     updates, opt_state = optimizer.update(grads, opt_state, param)
     param = optax.apply_updates(param, updates)
@@ -1648,43 +1689,6 @@ for step in range(num_steps):
     material_usage_to_plot.append(np.asarray(full_density_field.sum()))
     density_field_by_step.append(np.asarray(full_density_field))
     
-    # run to get timing of forward solve and gradient evaluation
-    '''
-    if step == 0:
-        import time
-
-        # --- Warm-up: triggers JIT compilation, not timed ---
-        _ = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
-        jax.block_until_ready(_)
-
-        loss_and_grad_fn = jax.value_and_grad(loss, argnums=3)
-        _ = loss_and_grad_fn(params, state, thickness, full_density_field,
-                            forces_array, allow_damage, max_time,
-                            strain_energy_max, weight_max, vf_0, alpha=0.1)
-        jax.block_until_ready(_)
-
-        # --- Timed: forward-solve only ---
-        t0 = time.perf_counter()
-        fwd_result = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
-        jax.block_until_ready(fwd_result)
-        forward_time = time.perf_counter() - t0
-
-        # --- Timed: gradient evaluation (forward + backward) ---
-        t0 = time.perf_counter()
-        grad_result = loss_and_grad_fn(params, state, thickness, full_density_field,
-                                        forces_array, allow_damage, max_time,
-                                        strain_energy_max, weight_max, vf_0, alpha=0.1)
-        jax.block_until_ready(grad_result)
-        gradient_time = time.perf_counter() - t0
-
-        num_steps_sim = int(max_time / 5.0E-07)
-        print(f"num_nodes:            {params.num_nodes}")
-        print(f"num_design_variables: {optimizable_indices.size}")
-        print(f"timesteps_per_solve:  {num_steps_sim}")
-        print(f"forward_solve_time:   {forward_time:.4f} s")
-        print(f"gradient_eval_time:   {gradient_time:.4f} s")
-        print(f"AD_overhead_factor:   {gradient_time/forward_time:.2f}x")
-    '''
 
    # Check if all damage is below 0.5 and exit early if so
     if jnp.all(final_damage < 0.5):
