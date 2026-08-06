@@ -921,12 +921,17 @@ def compute_internal_force(params, disp_x, disp_y, vol_state, rev_vol_state, inf
 		left_bc_nodes = left_bc_region
 		right_bc_nodes = right_bc_region
 
+
+		#'''
+		####### to apply BC for tension load ##################
 		# distribute evenly per node
 		force_per_node = ramp_force / left_bc_region.shape[0]
 
 		# apply boundary loads ONLY as external
 		external_force = external_force.at[left_bc_nodes, 0].add(-force_per_node)
 		external_force = external_force.at[right_bc_nodes, 0].add(force_per_node)
+		#########################################################
+		#'''
 
 	### TOTAL FORCE = internal + external
 	force = internal_force + external_force
@@ -1105,7 +1110,12 @@ def _solve(params, state, thickness:jax.Array, density_field:jax.Array, forces_a
     #jax.debug.print("Damage after reset: {d}", d=damage)
 
     def loop_body(i, vals):
-        new_vals = solve_one_step(params, vals, allow_damage)
+        # Gradient checkpointing: recompute this step's internals during the
+        # backward pass instead of holding every timestep's intermediate state
+        # in memory at once (reverse-mode AD through a long fori_loop otherwise
+        # scales memory with the number of timesteps -- 20,000 here -- which was
+        # crashing the kernel via OOM).
+        new_vals = jax.checkpoint(solve_one_step, static_argnums=(2,))(params, vals, allow_damage)
         return new_vals
 
 	#Solve
@@ -1258,16 +1268,29 @@ def compute_damage(vol_state:jax.Array, inf_state:jax.Array, undamaged_inf_state
 def loss(params, state, thickness_vector:Union[float, jax.Array], density_field: Union[float, jax.Array], forces_array:Union[float, jax.Array], allow_damage:bool, max_time:float, strain_energy_max, weight_max, vf_0=1.0, alpha=0.1):
     output_vals = _solve(params, state, thickness=thickness_vector, density_field=density_field, forces_array=forces_array, allow_damage=allow_damage, max_time=max_time)
 
-    strain_term = jnp.mean(output_vals.strain_energy) / strain_energy_max  # 0=stiffest, 1=least stiff
+    strain_energy = output_vals.strain_energy
+    strain_energy_norm = jnp.linalg.norm(strain_energy, ord=jnp.inf)
+    normalization_factor = 1.0E5
+    loss_value = strain_energy_norm / normalization_factor
+
+ 
+	######## uncommment this chunk to run weight minimizing term ######
+    #strain_term = jnp.mean(output_vals.strain_energy) / strain_energy_max  # 0=stiffest, 1=least stiff
     #weight_term = density_field.sum() / weight_max                          # 0=no material, 1=full material
     
-    
-    vf_target = 120 / density_field.size      # target volume fraction (e.g. 0.5)
-    volume_fraction = density_field.sum() / density_field.size
-    weight_term = (volume_fraction - vf_target) ** 2
+    #vf_target = 120 / density_field.size      # target volume fraction (e.g. 0.5)
+    #volume_fraction = density_field.sum() / density_field.size
+    #weight_term = (volume_fraction - vf_target) ** 2
 
-    loss_value = (1 - alpha) * strain_term + alpha * weight_term
-    return loss_value
+    #loss_value = (1 - alpha) * strain_term + alpha * weight_term
+    ##### uncomment above for weight minimizing term ######
+
+    # final_damage/strain_energy returned as aux so callers can get them from this
+    # same _solve() call instead of paying for a second, redundant _solve() just
+    # for plotting (matches the fix already applied in pdjax_2D_SED_weightInc_filtering_2.ipynb).
+    final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
+    #return loss_value
+    return loss_value, (strain_energy, final_damage)
 
 
 
@@ -1276,7 +1299,7 @@ def loss(params, state, thickness_vector:Union[float, jax.Array], density_field:
 if __name__ == "__main__":
     # Define fixed parameters
     fixed_length = 10.0  # Length of the bar
-    delta_x = 0.25       # Element length
+    delta_x = 0.25
     fixed_horizon = 3.6 * delta_x  # Horizon size
     thickness = 1.0  # Thickness of the bar
     num_elems = int(fixed_length/delta_x)
@@ -1294,8 +1317,8 @@ if __name__ == "__main__":
     elastic_modulus = 200E9
     mode1_fracture_tough = 120.0E6  # Mode I fracture toughness in J/m^2
     poisson_ratio = 0.33  #note nu will always be 0.33 in this code since using bond based PDa
-    #prescribed_force = 3.0E10
-    prescribed_force = 1.5E10
+    prescribed_force =1.5E10
+
 
     bulk_modulus = elastic_modulus / (3 * (1 - 2 * poisson_ratio))
     G = mode1_fracture_tough ** 2 / elastic_modulus  # Critical strain energy release rate
@@ -1401,8 +1424,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-
-   ##################################################
+##################################################
 # # Now using Optax to maximize
 # scalar param
 #param = jnp.array([1.0])
@@ -1449,13 +1471,27 @@ param = jnp.ones((len(top_half_middle),)) * density_field
 
 loss_to_plot = []
 damage_to_plot = []
-strain_energy_to_plot = []
+max_damage_to_plot = []
+material_usage_to_plot = []
+strain_energy_to_plot =[]
+damage = []
+density_field_by_step = []
 
-learning_rate = 0.01
+learning_rate = 0.1
 #num_steps = 70
-num_steps = 10
+#num_steps = 15
+num_steps = 15
+# ran for 25 steps, w/ LR schedule for SED opt structure
+#num_steps = 20
+#num_steps = 
 density_min = 0.0
 density_max = 1.0
+
+def lr_schedule(step):
+    return jnp.where(step < 8, 0.01,
+           jnp.where(step < 15, 0.001, 1e-4))
+
+
 
 # Define gradient bounds
 lower = 1E-2
@@ -1464,14 +1500,14 @@ upper = 20
 max_time = 1.0E-02
 
 # Optax optimizer
-optimizer = optax.adam(learning_rate)
+optimizer = optax.adam(learning_rate=lr_schedule)
 opt_state = optimizer.init(param)
 
 # Optimization loop
 damage_threshold = 0.5
 
 # Loss function (already defined as 'loss')
-loss_and_grad = jax.value_and_grad(loss, argnums=3)
+loss_and_grad = jax.value_and_grad(loss, argnums=3, has_aux=True)
 
 # Clamp function
 def clamp_params(grads):
@@ -1570,8 +1606,10 @@ for step in range(num_steps):
     full_density_field = full_density_field.at[no_damage_region_left].set(left_fixed_density)
     full_density_field = full_density_field.at[no_damage_region_right].set(right_fixed_density)
 
-    # Compute loss and gradients (grads wrt full_density_field)
-    loss_val, grads_full = loss_and_grad(
+    # Compute loss and gradients (grads wrt full_density_field). strain_energy/final_damage
+    # come back as aux outputs from this same solve, so we no longer need a second
+    # _solve() call just to get them for plotting.
+    (loss_val, (strain_energy, final_damage)), grads_full = loss_and_grad(
         params, state, thickness, full_density_field,
         forces_array, allow_damage, max_time,
         strain_energy_max, weight_max, vf_0, alpha=0.1)
@@ -1585,15 +1623,50 @@ for step in range(num_steps):
     # Enforcing density bounds of 0-1
     param = jnp.clip(param, 0.0, 1.0)
 
-    # Now compute strain_energy and damage separately for plotting
-    output_vals = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
+    loss_to_plot.append(np.asarray(loss_val))
+    strain_energy_to_plot.append(np.asarray(strain_energy))
+    damage_to_plot.append(np.asarray(final_damage))
+    max_damage_to_plot.append(np.asarray(final_damage.max()))
+    material_usage_to_plot.append(np.asarray(full_density_field.sum()))
+    density_field_by_step.append(np.asarray(full_density_field))
+    
+    # run to get timing of forward solve and gradient evaluation
+    '''
+    if step == 0:
+        import time
 
-    loss_to_plot.append(loss_val)
-    strain_energy_to_plot.append(output_vals.strain_energy)
+        # --- Warm-up: triggers JIT compilation, not timed ---
+        _ = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
+        jax.block_until_ready(_)
 
-    # Compute final damage for plotting
-    final_damage = compute_damage(output_vals.vol_state, output_vals.influence_state, output_vals.undamaged_influence_state)
-    damage_to_plot.append(final_damage)
+        loss_and_grad_fn = jax.value_and_grad(loss, argnums=3)
+        _ = loss_and_grad_fn(params, state, thickness, full_density_field,
+                            forces_array, allow_damage, max_time,
+                            strain_energy_max, weight_max, vf_0, alpha=0.1)
+        jax.block_until_ready(_)
+
+        # --- Timed: forward-solve only ---
+        t0 = time.perf_counter()
+        fwd_result = _solve(params, state, thickness, full_density_field, forces_array, allow_damage, max_time)
+        jax.block_until_ready(fwd_result)
+        forward_time = time.perf_counter() - t0
+
+        # --- Timed: gradient evaluation (forward + backward) ---
+        t0 = time.perf_counter()
+        grad_result = loss_and_grad_fn(params, state, thickness, full_density_field,
+                                        forces_array, allow_damage, max_time,
+                                        strain_energy_max, weight_max, vf_0, alpha=0.1)
+        jax.block_until_ready(grad_result)
+        gradient_time = time.perf_counter() - t0
+
+        num_steps_sim = int(max_time / 5.0E-07)
+        print(f"num_nodes:            {params.num_nodes}")
+        print(f"num_design_variables: {optimizable_indices.size}")
+        print(f"timesteps_per_solve:  {num_steps_sim}")
+        print(f"forward_solve_time:   {forward_time:.4f} s")
+        print(f"gradient_eval_time:   {gradient_time:.4f} s")
+        print(f"AD_overhead_factor:   {gradient_time/forward_time:.2f}x")
+    '''
 
    # Check if all damage is below 0.5 and exit early if so
     if jnp.all(final_damage < 0.5):
